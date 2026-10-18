@@ -357,7 +357,8 @@ class MainActivity : AppCompatActivity() {
         val parsedSeed = try { URI(seed).normalize() } catch (_: Exception) { null }
         val scheme = parsedSeed?.scheme?.lowercase(Locale.ROOT)
         val seedHost = seedHostOf(seed)
-        if (parsedSeed == null || scheme !in setOf("http", "https") ||
+        if (parsedSeed == null || scheme == null ||
+            (scheme != "http" && scheme != "https") ||
             seedHost.isNullOrBlank() || parsedSeed.userInfo != null
         ) {
             binding.etSeedUrl.error = "Masukkan URL HTTP/HTTPS yang valid"
