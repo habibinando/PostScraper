@@ -24,14 +24,19 @@ Paragraf pertama ...
 ```
 Nama file: `korpus_crawl_<domain>_<timestamp>.txt`.
 
-## Cara Build
-1. Buka **Android Studio** → `Open` → folder proyek.
-2. Tunggu Gradle sync (OkHttp, Jsoup, Coroutines terunduh otomatis).
-3. Run ke HP Android (USB debugging) atau emulator.
-4. Min SDK 24 (Android 7.0), target SDK 34. Android 10+ tidak perlu izin storage (pakai `MediaStore.Downloads`).
+## Build APK
+
+Konfigurasi Android proyek:
+- **minSdk 26** — Android 8.0 ke atas.
+- **compileSdk / targetSdk 37** — Android API 37.
+- **Android Gradle Plugin 9.2.1** dengan Gradle 9.4.1.
+- **JDK 25** untuk menjalankan build; bytecode aplikasi tetap ditargetkan ke Java 17 untuk kompatibilitas Android.
 
 ### Build APK otomatis (GitHub Actions)
-Jika file `.github/workflows/build-apk.yml` ada, setiap push ke `main` menjalankan workflow **Build APK**. Unduh hasilnya di tab **Actions** → run terbaru → **Artifacts** → `PostScraper-debug-apk`.
+Setiap push ke `main` menjalankan workflow **Build APK**. Unduh APK di tab **Actions** → run terbaru → **Artifacts** → `PostScraper-debug-apk`.
+
+### Build lokal
+Buka folder proyek dengan Android Studio yang mendukung Android Gradle Plugin 9.2.1. Pastikan platform SDK Android 37 dan Build Tools 36.0.0 tersedia, lalu jalankan tugas `assembleDebug`.
 
 ## Catatan Penting
 - Hormati **Terms of Service** situs target.
