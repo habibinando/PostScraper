@@ -90,7 +90,7 @@ internal class PageLoader(
     @SuppressLint("SetJavaScriptEnabled")
     suspend fun renderWithWebView(url: String): String? {
         return try {
-            withTimeoutOrNull(30_000L) {
+            withTimeoutOrNull(18_000L) {
                 withContext(Dispatchers.Main) {
                     suspendCancellableCoroutine<String?> { continuation ->
                         val webView = WebView(activity)
@@ -125,7 +125,7 @@ internal class PageLoader(
                                     target.evaluateJavascript("document.documentElement.outerHTML") { raw ->
                                         finish(decodeJsString(raw))
                                     }
-                                }, 3_500L)
+                                }, 900L)
                             }
 
                             override fun onReceivedError(

@@ -7,7 +7,6 @@ PostScraper crawls a website from a seed URL, extracts article text, merges mult
 - Native Android app; minimum Android API 26.
 - Crawls same-domain links with article URLs prioritized over category pages.
 - Local extraction using Jsoup, with AMP fallback for JalanTikus and JavaScript rendering via WebView.
-- Optional **Jina Reader** fallback for pages that ordinary HTML, AMP, and WebView cannot read.
 - Pagination-aware merging: attempts to combine up to 12 pages of the same article into one corpus entry.
 - Filters common navigation, sidebar, ad, sharing, related-content, and comment elements.
 - Keeps an anti-duplicate history of successfully exported canonical article URLs.
@@ -18,10 +17,8 @@ PostScraper crawls a website from a seed URL, extracts article text, merges mult
 
 1. Fetch regular HTML on-device.
 2. When needed, try the site's AMP route if a known AMP fallback exists.
-3. If the optional Jina Reader switch is enabled, request clean Markdown from the Reader service.
-4. Try WebView rendering as a final fallback.
-
-The Jina Reader service is external. When the switch is enabled, URLs sent to fallback may be processed by that service. Anonymous Reader requests have published rate limits; failures, bot protection, login walls, or site changes can still prevent extraction. No scraping tool can guarantee every website or article layout.
+3. If article content is still too short, render the page through WebView to execute JavaScript.
+4. If the parser still cannot identify the article, optionally use the local Qwen GGUF model as the final extraction fallback.
 
 ## Article pagination
 
@@ -48,7 +45,7 @@ Output file format: `korpus_crawl_<domain>_<timestamp>.txt`.
 - `CrawlEngine.kt` — work queues, crawl loop, duplicate handling, fallback order, and page merging.
 - `ArticleExtractor.kt` — URL normalization, pagination detection, article content extraction, cleanup, and Markdown parsing.
 - `PageLoader.kt` — HTTP fetching, request cancellation, and WebView JavaScript rendering.
-- `RemoteReader.kt` — optional external Reader fallback.
+- `LocalModelCleaner.kt` — optional on-device GGUF extraction fallback used only when normal extraction cannot recover enough article text.
 - `TextExporter.kt` — final text assembly and Android Downloads export.
 
 ## Build APK
@@ -66,11 +63,6 @@ The GitHub Actions workflow `Build APK` runs on each push to `main`. Open the la
 Respect the target site's Terms of Service, robots/access policies, copyright, rate limits, and content ownership. Do not use PostScraper to bypass login controls or technical access restrictions.
 
 
-## Optional provider settings
+## On-device article extraction fallback
 
-The hamburger menu opens local settings for:
-- **Firecrawl**: optional remote scrape fallback for article pages that local HTML/AMP extraction cannot read. Firecrawl charges credits per page, including on its free tier; add your own API key and enable it explicitly.
-- **Groq**: optional text cleanup after the article has already been extracted. It does not crawl websites or defeat access controls. Choose a model ID returned by the Groq API; model availability and free-tier limits vary by account and can change.
-- **HTTP proxy**: optional manual host and port for trusted proxies. PostScraper does not automatically harvest or rotate unknown public proxies. Such proxies are often unreliable and can observe traffic. WebView rendering may still use Android's normal network route.
-
-Provider API keys are saved in the app's private preferences and sent only to the provider that uses them. Firecrawl receives the target URL when used; Groq receives article text for cleanup. Leave both features disabled to keep extraction local except for the existing optional Jina Reader fallback.
+The hamburger settings allow importing Qwen2.5-3B-Instruct-Abliterated.Q4_K_M.gguf. The model runs only as the final fallback when HTML, AMP, and WebView have not produced enough article text. No external reader or scraping API is used. Article fetching still requires an internet connection, but final extraction runs on-device. If an inference is already running, Stop may need to wait for that one model call to return.

@@ -7,11 +7,8 @@ import java.net.Proxy
 import java.util.concurrent.TimeUnit
 
 internal data class AppSettings(
-    val firecrawlApiKey: String = "",
-    val useFirecrawl: Boolean = false,
-    val groqApiKey: String = "",
-    val groqModel: String = "openai/gpt-oss-20b",
-    val useGroqCleaning: Boolean = false,
+    val localModelPath: String = "",
+    val useLocalModelCleaning: Boolean = false,
     val proxyEnabled: Boolean = false,
     val proxyHost: String = "",
     val proxyPort: Int = 8080
@@ -21,12 +18,19 @@ internal class AppSettingsStore(context: Context) {
     private val preferences = context.applicationContext
         .getSharedPreferences("postscraper_settings", Context.MODE_PRIVATE)
 
+    init {
+        preferences.edit()
+            .remove("groq_api_key")
+            .remove("groq_model")
+            .remove("use_groq_cleaning")
+            .remove("firecrawl_api_key")
+            .remove("use_firecrawl")
+            .apply()
+    }
+
     fun load(): AppSettings = AppSettings(
-        firecrawlApiKey = preferences.getString("firecrawl_api_key", "").orEmpty(),
-        useFirecrawl = preferences.getBoolean("use_firecrawl", false),
-        groqApiKey = preferences.getString("groq_api_key", "").orEmpty(),
-        groqModel = preferences.getString("groq_model", "openai/gpt-oss-20b").orEmpty(),
-        useGroqCleaning = preferences.getBoolean("use_groq_cleaning", false),
+        localModelPath = preferences.getString("local_model_path", "").orEmpty(),
+        useLocalModelCleaning = preferences.getBoolean("use_local_model_cleaning", false),
         proxyEnabled = preferences.getBoolean("proxy_enabled", false),
         proxyHost = preferences.getString("proxy_host", "").orEmpty(),
         proxyPort = preferences.getInt("proxy_port", 8080)
@@ -34,11 +38,8 @@ internal class AppSettingsStore(context: Context) {
 
     fun save(settings: AppSettings) {
         preferences.edit()
-            .putString("firecrawl_api_key", settings.firecrawlApiKey)
-            .putBoolean("use_firecrawl", settings.useFirecrawl)
-            .putString("groq_api_key", settings.groqApiKey)
-            .putString("groq_model", settings.groqModel)
-            .putBoolean("use_groq_cleaning", settings.useGroqCleaning)
+            .putString("local_model_path", settings.localModelPath)
+            .putBoolean("use_local_model_cleaning", settings.useLocalModelCleaning)
             .putBoolean("proxy_enabled", settings.proxyEnabled)
             .putString("proxy_host", settings.proxyHost)
             .putInt("proxy_port", settings.proxyPort)
@@ -62,9 +63,9 @@ internal class NetworkClientFactory(private val settingsStore: AppSettingsStore)
         synchronized(this) {
             if (cachedClient == null || cachedFingerprint != fingerprint) {
                 val builder = OkHttpClient.Builder()
-                    .connectTimeout(18, TimeUnit.SECONDS)
-                    .readTimeout(45, TimeUnit.SECONDS)
-                    .callTimeout(60, TimeUnit.SECONDS)
+                    .connectTimeout(8, TimeUnit.SECONDS)
+                    .readTimeout(12, TimeUnit.SECONDS)
+                    .callTimeout(18, TimeUnit.SECONDS)
                     .followRedirects(true)
                     .retryOnConnectionFailure(true)
 
