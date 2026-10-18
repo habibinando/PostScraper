@@ -89,6 +89,10 @@ class MainActivity : AppCompatActivity() {
     private var activeCrawlJob: Job? = null
     private var crawlRunning = false
 
+    /** URL artikel yang sudah berhasil disimpan; dipersist setelah file output sukses. */
+    private val visited = HashSet<String>()
+    private lateinit var historyFile: File
+
     @Volatile
     private var stopRequested = false
 
