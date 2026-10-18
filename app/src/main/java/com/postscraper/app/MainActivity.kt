@@ -1,7 +1,6 @@
 package com.postscraper.app
 
 import android.Manifest
-import android.annotation.SuppressLint
 import android.content.ContentValues
 import android.content.pm.PackageManager
 import android.os.Build
@@ -10,10 +9,6 @@ import android.os.Environment
 import android.provider.MediaStore
 import android.text.method.ScrollingMovementMethod
 import android.view.View
-import android.webkit.WebResourceError
-import android.webkit.WebResourceRequest
-import android.webkit.WebView
-import android.webkit.WebViewClient
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
@@ -30,26 +25,15 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
-import okhttp3.Call
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import org.json.JSONTokener
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
-import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileWriter
-import java.io.OutputStreamWriter
 import java.net.URI
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
-import kotlin.coroutines.resume
 
 /**
  * PostScraper Crawler — native Android.
@@ -69,17 +53,8 @@ import kotlin.coroutines.resume
 class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
-
-    private val desktopUa =
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
-                "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-
-    private val client = OkHttpClient.Builder()
-        .connectTimeout(20, TimeUnit.SECONDS)
-        .readTimeout(20, TimeUnit.SECONDS)
-        .callTimeout(35, TimeUnit.SECONDS)
-        .followRedirects(true)
-        .build()
+    private val pageLoader by lazy(LazyThreadSafetyMode.NONE) { PageLoader(this) { stopRequested } }
+    private val textExporter by lazy(LazyThreadSafetyMode.NONE) { TextExporter(this) }
 
     // Semua pekerjaan crawl terikat ke lifecycle Activity; tidak membuat scope liar per tombol.
     private val activityJob = SupervisorJob()
@@ -94,14 +69,6 @@ class MainActivity : AppCompatActivity() {
     @Volatile
     private var stopRequested = false
 
-    @Volatile
-    private var activeCall: Call? = null
-
-    @Volatile
-    private var cancelWebViewRender: (() -> Unit)? = null
-
-    /** URL halaman maksimum yang dibaca untuk menghindari OOM karena HTML sangat besar. */
-    private val maxHtmlBytes = 5 * 1024 * 1024
     private val storagePermCode = 101
     private val remoteReader = RemoteReader()
 
@@ -148,8 +115,7 @@ class MainActivity : AppCompatActivity() {
         binding.btnStop.setOnClickListener {
             if (!crawlRunning) return@setOnClickListener
             stopRequested = true
-            activeCall?.cancel()
-            cancelWebViewRender?.invoke()
+            pageLoader.cancelCurrent()
             log(">> Stop diminta. Hasil yang sudah terkumpul tetap akan disimpan.")
         }
         binding.btnClearHistory.setOnClickListener {
@@ -169,8 +135,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         stopRequested = true
-        activeCall?.cancel()
-        cancelWebViewRender?.invoke()
+        pageLoader.cancelCurrent()
         activityJob.cancel()
         super.onDestroy()
     }
@@ -349,13 +314,13 @@ class MainActivity : AppCompatActivity() {
                 val fileName = "korpus_crawl_${seedHost.replace(".", "_")}_$timestamp.txt"
 
                 if (posts.isNotEmpty()) {
-                    val finalText = buildFinalText(posts)
+                    val finalText = textExporter.buildFinalText(posts)
                     if (finalText.isBlank()) {
                         log("\n>>> GAGAL: hasil teks kosong. Riwayat tidak diubah.")
                     } else {
                         totalChars = finalText.length
                         totalWords = finalText.split(Regex("\\s+")).count { it.isNotBlank() }
-                        saveToDownload(fileName, finalText)
+                        textExporter.saveToDownload(fileName, finalText)
                         posts.forEach { markVisited(it.url) }
                         savedPath = "Download/$fileName"
                         fileSaved = true
@@ -420,7 +385,7 @@ class MainActivity : AppCompatActivity() {
     ): PageResult {
         var notFound = false
         val doc: Document? = try {
-            Jsoup.parse(fetchHtml(url), url)
+            Jsoup.parse(pageLoader.fetchHtml(url), url)
         } catch (e: Exception) {
             if (stopRequested) return PageResult(emptyList(), null, false)
             val msg = e.message ?: e.javaClass.simpleName
@@ -482,7 +447,7 @@ class MainActivity : AppCompatActivity() {
                 (!afterRemote.isPost && afterRemote.links.size < 5)
             if (needsWebView) {
                 log("   mencoba render WebView (JavaScript)...")
-                val html = renderWithWebView(url)
+                val html = pageLoader.renderWithWebView(url)
                 if (html != null) {
                     val rendered = ArticleExtractor.analyze(
                         Jsoup.parse(html, url), url, seedHost, minChars, minimalClean,
@@ -618,182 +583,7 @@ class MainActivity : AppCompatActivity() {
 
     // ---------- Fetch ----------
 
-    private fun fetchHtml(url: String): String {
-        val request = Request.Builder()
-            .url(url)
-            .header("User-Agent", desktopUa)
-            .header("Accept-Language", "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7")
-            .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-            .build()
-
-        val call = client.newCall(request)
-        activeCall = call
-        try {
-            call.execute().use { resp ->
-                if (!resp.isSuccessful) throw Exception("HTTP ${resp.code}")
-                val body = resp.body ?: throw Exception("body kosong")
-                val mediaType = body.contentType()
-                if (mediaType != null &&
-                    !mediaType.type.equals("text", true) &&
-                    !mediaType.subtype.contains("xml", true) &&
-                    !mediaType.subtype.contains("html", true)
-                ) {
-                    throw Exception("bukan halaman HTML (${mediaType})")
-                }
-
-                val output = ByteArrayOutputStream()
-                val buffer = ByteArray(8192)
-                body.byteStream().use { input ->
-                    while (true) {
-                        if (stopRequested) throw java.io.IOException("Crawl dihentikan")
-                        val count = input.read(buffer)
-                        if (count < 0) break
-                        if (output.size() + count > maxHtmlBytes) {
-                            throw Exception("halaman terlalu besar (maksimum 5 MB), dilewati")
-                        }
-                        output.write(buffer, 0, count)
-                    }
-                }
-                val charset = mediaType?.charset(Charsets.UTF_8) ?: Charsets.UTF_8
-                return output.toString(charset.name())
-            }
-        } finally {
-            if (activeCall === call) activeCall = null
-        }
-    }
-
-    @SuppressLint("SetJavaScriptEnabled")
-    private suspend fun renderWithWebView(url: String): String? {
-        return try {
-            withTimeoutOrNull(30_000L) {
-                withContext(Dispatchers.Main) {
-                    suspendCancellableCoroutine<String?> { cont ->
-                        val wv = WebView(this@MainActivity)
-                        val finished = AtomicBoolean(false)
-
-                        fun finish(result: String?) {
-                            if (!finished.compareAndSet(false, true)) return
-                            cancelWebViewRender = null
-                            try {
-                                wv.stopLoading()
-                                wv.destroy()
-                            } catch (_: Exception) { }
-                            if (cont.isActive) cont.resume(result)
-                        }
-
-                        cancelWebViewRender = { finish(null) }
-
-                        wv.settings.javaScriptEnabled = true
-                        wv.settings.domStorageEnabled = true
-                        wv.settings.blockNetworkImage = true
-                        wv.settings.mediaPlaybackRequiresUserGesture = true
-                        wv.settings.userAgentString = desktopUa
-
-                        wv.webViewClient = object : WebViewClient() {
-                            override fun onPageFinished(view: WebView?, pageUrl: String?) {
-                                val v = view ?: return
-                                // Beri kesempatan JavaScript selesai merender tanpa menyentuh batas timeout 30 detik.
-                                v.postDelayed({
-                                    if (finished.get()) return@postDelayed
-                                    v.evaluateJavascript("document.documentElement.outerHTML") { raw ->
-                                        finish(decodeJsString(raw))
-                                    }
-                                }, 3500)
-                            }
-
-                            override fun onReceivedError(
-                                view: WebView?,
-                                request: WebResourceRequest?,
-                                error: WebResourceError?
-                            ) {
-                                if (request?.isForMainFrame == true) finish(null)
-                            }
-                        }
-
-                        cont.invokeOnCancellation {
-                            cancelWebViewRender = null
-                            if (finished.compareAndSet(false, true)) {
-                                wv.post {
-                                    try {
-                                        wv.stopLoading()
-                                        wv.destroy()
-                                    } catch (_: Exception) { }
-                                }
-                            }
-                        }
-
-                        wv.loadUrl(url)
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            null
-        }
-    }
-
-    private fun decodeJsString(raw: String?): String? {
-        if (raw == null || raw == "null" || raw.length < 2) return null
-        return try {
-            JSONTokener(raw).nextValue() as? String
-        } catch (e: Exception) {
-            null
-        }
-    }
-
-    // ---------- Ekstraksi isi artikel ----------
-
-    private fun buildFinalText(posts: List<PostData>): String {
-        val sb = StringBuilder()
-        for (post in posts) {
-            val title = post.title.trim()
-            val lines = post.lines.map { it.trim() }.filter { it.isNotBlank() }
-            if (title.isBlank() || lines.isEmpty()) continue
-            sb.append(title).append('\n')
-            for (line in lines) sb.append(line).append('\n')
-            sb.append('\n')
-        }
-        return sb.toString()
-    }
-
     // ---------- Simpan ke Download ----------
-
-    private fun saveToDownload(fileName: String, content: String) {
-        if (content.isBlank()) throw Exception("Konten kosong; tidak ada file yang dibuat.")
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            val values = ContentValues().apply {
-                put(MediaStore.Downloads.DISPLAY_NAME, fileName)
-                put(MediaStore.Downloads.MIME_TYPE, "text/plain")
-                put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
-            }
-            val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-                ?: throw Exception("Gagal membuat file di Download")
-            var saved = false
-            try {
-                contentResolver.openOutputStream(uri)?.use { os ->
-                    OutputStreamWriter(os, Charsets.UTF_8).use { it.write(content) }
-                } ?: throw Exception("Gagal membuka file output")
-                saved = true
-            } finally {
-                if (!saved) {
-                    try { contentResolver.delete(uri, null, null) } catch (_: Exception) { }
-                }
-            }
-        } else {
-            if (ContextCompat.checkSelfPermission(
-                    this, Manifest.permission.WRITE_EXTERNAL_STORAGE
-                ) != PackageManager.PERMISSION_GRANTED
-            ) {
-                ActivityCompat.requestPermissions(
-                    this, arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE), storagePermCode
-                )
-                throw Exception("Izin penyimpanan belum diberikan. Berikan izin lalu jalankan ulang.")
-            }
-            val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-            if (!dir.exists() && !dir.mkdirs()) throw Exception("Folder Download tidak bisa dibuat")
-            File(dir, fileName).writeText(content, Charsets.UTF_8)
-        }
-    }
 
     // ---------- UI helpers ----------
 
