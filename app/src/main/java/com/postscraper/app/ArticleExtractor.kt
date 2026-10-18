@@ -167,9 +167,10 @@ internal object ArticleExtractor {
         url: String,
         seedHost: String,
         minChars: Int,
-        minimalClean: Boolean
+        minimalClean: Boolean,
+        forcePost: Boolean = false
     ): PageResult {
-        val isPost = looksLikePost(url, doc)
+        val isPost = forcePost || looksLikePost(url, doc)
         val pagination = if (isPost) findArticlePagination(doc, url, seedHost) else emptyList()
         val paginationUrls = pagination.map { it.first }.toSet()
         val nextPage = pagination.firstOrNull { isNextLabel(it.second) }?.first
@@ -344,7 +345,7 @@ internal object ArticleExtractor {
         if (title.isBlank()) title = cleanLine(url.trimEnd('/').substringAfterLast('/').replace('-', ' '))
         val canonical = normalizeLink(url, url, seedHost) ?: url
         val post = if (lines.sumOf { it.length } >= 40) PostData(canonical, title, lines.toList()) else null
-        return PageResult(links, post, isPost = true, rendered = true, nextPageUrl = nextPage)
+        return PageResult(links, post, isPost = true, rendered = false, nextPageUrl = nextPage)
     }
 
 
