@@ -1,54 +1,66 @@
-# PostScraper Crawler — Aplikasi Native Android (Kotlin)
+# PostScraper — Android article corpus extractor
 
-Aplikasi native Android yang **merayap (crawl) otomatis** mulai dari 1 URL seed (mis. homepage blog), masuk ke tiap postingan, mengambil **isi artikelnya saja**, lalu mencari postingan berikutnya. Hasilnya disimpan sebagai file **`.txt` bersih** di **`Internal Storage > Download`**.
+PostScraper crawls a website from a seed URL, extracts article text, merges multi-page articles where the site exposes a recognizable next-page link, de-duplicates canonical article URLs, and exports a plain-text corpus to the Android **Downloads** folder.
 
-## Alur Crawler
-1. Isi URL awal (seed), mis. `https://jalantikus.com`, dan **maks. post** yang mau diambil.
-2. Halaman diambil lewat HTTP biasa. Jika isinya kosong (situs dirender JavaScript), halaman otomatis **dirender ulang dengan WebView** lalu dibaca.
-3. Semua link se-domain dikumpulkan. Link yang mirip **postingan** (slug panjang, `.html`, path bertanggal) masuk antrian prioritas; halaman kategori/index (`/tips`, `/gadgets`, `/page/2`, dst.) hanya dipakai untuk mencari link baru.
-4. Tiap postingan: ambil judul + isi artikel, buang menu, footer, sidebar, iklan, komentar, "Baca juga", **link**, dan **garis pemisah (`=====`)**.
-5. Dari dalam postingan, link post lain ikut diantrikan, jadi crawl berlanjut dari post ke post.
-6. Baris yang berulang di banyak post (boilerplate) dibuang di akhir, lalu file disimpan.
-7. **Riwayat anti-dobel** hanya mencatat post yang benar-benar berhasil diambil. Bisa di-toggle ON/OFF dan dihapus.
-8. **Stop** kapan saja — hasil yang sudah terkumpul tetap disimpan.
+## Features
 
-## Format file hasil
-Teks polos, tanpa header, tanpa link, tanpa garis pemisah. Satu post = judul, lalu paragraf satu per baris, lalu satu baris kosong:
+- Native Android app; minimum Android API 26.
+- Crawls same-domain links with article URLs prioritized over category pages.
+- Local extraction using Jsoup, with AMP fallback for JalanTikus and JavaScript rendering via WebView.
+- Optional **Jina Reader** fallback for pages that ordinary HTML, AMP, and WebView cannot read.
+- Pagination-aware merging: attempts to combine up to 12 pages of the same article into one corpus entry.
+- Filters common navigation, sidebar, ad, sharing, related-content, and comment elements.
+- Keeps an anti-duplicate history of successfully exported canonical article URLs.
+- Stops safely and preserves articles already collected during a run.
+- Exports UTF-8 `.txt` files to Downloads.
+
+## Crawling order
+
+1. Fetch regular HTML on-device.
+2. When needed, try the site's AMP route if a known AMP fallback exists.
+3. If the optional Jina Reader switch is enabled, request clean Markdown from the Reader service.
+4. Try WebView rendering as a final fallback.
+
+The Jina Reader service is external. When the switch is enabled, URLs sent to fallback may be processed by that service. Anonymous Reader requests have published rate limits; failures, bot protection, login walls, or site changes can still prevent extraction. No scraping tool can guarantee every website or article layout.
+
+## Article pagination
+
+For article pages exposing a clear continuation link, PostScraper looks for common pagination markup, rel-next links, next/continue labels, and numbered article-page links. It merges pages that appear to share the same article title/canonical URL, with a hard limit of 12 pages. Websites with custom pagination patterns may need a site-specific rule; unrelated pages are not intentionally combined.
+
+## Export format
+
+One article per section: title, paragraph lines, then a blank line.
+
+```text
+Judul Artikel Pertama
+Paragraf pertama.
+Paragraf kedua.
+
+Judul Artikel Kedua
+Isi artikel.
 ```
-Judul Post Pertama
-Paragraf pertama isi artikel.
-Paragraf kedua isi artikel.
 
-Judul Post Kedua
-Paragraf pertama ...
-```
-Nama file: `korpus_crawl_<domain>_<timestamp>.txt`.
+Output file format: `korpus_crawl_<domain>_<timestamp>.txt`.
+
+## Project structure
+
+- `MainActivity.kt` — input validation, UI state, history, lifecycle, and export orchestration.
+- `CrawlEngine.kt` — work queues, crawl loop, duplicate handling, fallback order, and page merging.
+- `ArticleExtractor.kt` — URL normalization, pagination detection, article content extraction, cleanup, and Markdown parsing.
+- `PageLoader.kt` — HTTP fetching, request cancellation, and WebView JavaScript rendering.
+- `RemoteReader.kt` — optional external Reader fallback.
+- `TextExporter.kt` — final text assembly and Android Downloads export.
 
 ## Build APK
 
-Konfigurasi Android proyek:
-- **minSdk 26** — Android 8.0 ke atas.
-- **compileSdk API 37.0 / targetSdk 37** — Android API 37.
-- **Android Gradle Plugin 9.2.1** dengan Gradle 9.4.1.
-- **JDK 25** untuk menjalankan build; bytecode aplikasi tetap ditargetkan ke Java 17 untuk kompatibilitas Android.
+The GitHub Actions workflow `Build APK` runs on each push to `main`. Open the latest successful run, then download the `PostScraper-debug-apk` artifact.
 
-### Build APK otomatis (GitHub Actions)
-Setiap push ke `main` menjalankan workflow **Build APK**. Unduh APK di tab **Actions** → run terbaru → **Artifacts** → `PostScraper-debug-apk`.
+- Android minimum API: 26.
+- Compile/target API: 37.
+- Android Gradle Plugin: 9.2.1.
+- Gradle: 9.4.1.
+- CI JDK: 25; app bytecode targets Java 17.
 
-### Build lokal
-Buka folder proyek dengan Android Studio yang mendukung Android Gradle Plugin 9.2.1. Pastikan Android SDK Platform 37.0 dan Build Tools 36.0.0 tersedia. Pada Gradle, `compileSdk` menggunakan `release(37) { minorApiLevel = 0 }` agar cocok dengan paket SDK `android-37.0`, lalu jalankan tugas `assembleDebug`.
+## Responsible use
 
-## Catatan Penting
-- Hormati **Terms of Service** situs target.
-- Halaman yang dirender WebView lebih lambat (sekitar 3–5 detik per halaman).
-- Situs dengan login wall atau proteksi bot tidak bisa diambil.
-- Jeda antar request 800 ms (sopan) — bisa diubah di kode (`delay(800)`).
-- Riwayat disimpan di internal app (`filesDir/posts_history.txt`) — tombol **Hapus Riwayat** untuk reset.
-- Toggle "Pembersihan" OFF = tidak membuang menu/footer/iklan, tetapi link dan garis pemisah tetap dibuang.
-
-## Teknologi
-- Kotlin + Coroutines (crawl di background, bisa di-stop)
-- OkHttp 4.12 (HTTP client)
-- Jsoup 1.17 (parsing HTML, ekstrak link & teks)
-- WebView (render halaman JavaScript)
-- MediaStore.Downloads (Android 10+) / direct file (≤9)
+Respect the target site's Terms of Service, robots/access policies, copyright, rate limits, and content ownership. Do not use PostScraper to bypass login controls or technical access restrictions.
