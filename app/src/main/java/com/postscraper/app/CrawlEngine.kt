@@ -110,7 +110,9 @@ internal class CrawlEngine(
                         log("   post duplikat tidak disimpan (URL kanonis sudah ada).")
                     } else {
                         var finalPost = post
-                        if (options.useGroqCleaning && options.groqApiKey.isNotBlank()) {
+                        if (options.useGroqCleaning && options.groqApiKey.isNotBlank() &&
+                            post.lines.sumOf { it.length } <= 10_000
+                        ) {
                             try {
                                 val cleaned = groqCleaner.clean(
                                     title = post.title,
@@ -136,6 +138,8 @@ internal class CrawlEngine(
                             } catch (e: Exception) {
                                 log("   Groq tidak tersedia: " + (e.message ?: e.javaClass.simpleName) + ". Teks asli dipertahankan.")
                             }
+                        } else if (options.useGroqCleaning && post.lines.sumOf { it.length } > 10_000) {
+                            log("   Teks lebih dari 10.000 karakter; Groq dilewati agar isi artikel tidak terpotong.")
                         }
                         collected++
                         posts.add(finalPost)
