@@ -191,8 +191,8 @@ internal object ArticleExtractor {
         if (isPost) {
             val title = pickTitle(doc, url)
             val lines = extractLines(doc, minimalClean, minChars)
-            // Keep short fragments so the caller can join pages before applying minChars.
-            if (lines.sumOf { it.length } >= 40) post = PostData(canonical, title, lines)
+            // Keep even tiny fragments: another page may contain the rest of this same article.
+            post = PostData(canonical, title, lines)
         }
         return PageResult(links, post, isPost, rendered = false, nextPageUrl = nextPage)
     }
@@ -344,7 +344,7 @@ internal object ArticleExtractor {
         }
         if (title.isBlank()) title = cleanLine(url.trimEnd('/').substringAfterLast('/').replace('-', ' '))
         val canonical = normalizeLink(url, url, seedHost) ?: url
-        val post = if (lines.sumOf { it.length } >= 40) PostData(canonical, title, lines.toList()) else null
+        val post = PostData(canonical, title, lines.toList())
         return PageResult(links, post, isPost = true, rendered = false, nextPageUrl = nextPage)
     }
 
