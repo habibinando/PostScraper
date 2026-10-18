@@ -18,20 +18,29 @@ import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
 import com.postscraper.app.databinding.ActivityMainBinding
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import okhttp3.Call
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONTokener
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileWriter
 import java.io.OutputStreamWriter
@@ -68,21 +77,32 @@ class MainActivity : AppCompatActivity() {
                 "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
     private val client = OkHttpClient.Builder()
-        .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
+        .connectTimeout(20, TimeUnit.SECONDS)
+        .readTimeout(20, TimeUnit.SECONDS)
+        .callTimeout(35, TimeUnit.SECONDS)
         .followRedirects(true)
         .build()
 
-    /** URL POST yang sudah berhasil diambil — persist ke file. */
-    private val visited = HashSet<String>()
-    private lateinit var historyFile: File
+    // Semua pekerjaan crawl terikat ke lifecycle Activity; tidak membuat scope liar per tombol.
+    private val activityJob = SupervisorJob()
+    private val crawlerScope = CoroutineScope(activityJob + Dispatchers.IO)
+    private var activeCrawlJob: Job? = null
+    private var crawlRunning = false
 
     @Volatile
     private var stopRequested = false
 
+    @Volatile
+    private var activeCall: Call? = null
+
+    @Volatile
+    private var cancelWebViewRender: (() -> Unit)? = null
+
+    /** URL halaman maksimum yang dibaca untuk menghindari OOM karena HTML sangat besar. */
+    private val maxHtmlBytes = 5 * 1024 * 1024
     private val storagePermCode = 101
 
-    private class PostData(val title: String, val lines: List<String>)
+    private class PostData(val url: String, val title: String, val lines: List<String>)
 
     private class PageResult(
         val links: List<String>,
@@ -162,6 +182,24 @@ class MainActivity : AppCompatActivity() {
         loadHistory()
 
         binding.logTextView.movementMethod = ScrollingMovementMethod()
+
+        // Android 15+ mewajibkan edge-to-edge untuk target SDK modern.
+        // Tambahkan inset agar kontrol tidak tertutup status bar / navigation bar.
+        if (Build.VERSION.SDK_INT >= 35) {
+            WindowCompat.setDecorFitsSystemWindows(window, false)
+            val left = binding.root.paddingLeft
+            val top = binding.root.paddingTop
+            val right = binding.root.paddingRight
+            val bottom = binding.root.paddingBottom
+            ViewCompat.setOnApplyWindowInsetsListener(binding.root) { view, insets ->
+                val bars = insets.getInsets(
+                    WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
+                )
+                view.setPadding(left + bars.left, top + bars.top, right + bars.right, bottom + bars.bottom)
+                insets
+            }
+        }
+
         updateStatus(0, 0)
 
         if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P &&
@@ -175,18 +213,34 @@ class MainActivity : AppCompatActivity() {
 
         binding.btnStart.setOnClickListener { startCrawl() }
         binding.btnStop.setOnClickListener {
+            if (!crawlRunning) return@setOnClickListener
             stopRequested = true
-            log(">> Stop diminta, akan menyelesaikan penyimpanan...")
+            // Hentikan request aktif, supaya Stop tidak harus menunggu timeout penuh.
+            activeCall?.cancel()
+            cancelWebViewRender?.invoke()
+            log(">> Stop diminta. Hasil yang sudah terkumpul tetap akan disimpan.")
         }
         binding.btnClearHistory.setOnClickListener {
+            if (crawlRunning) {
+                toast("Hentikan crawling sebelum menghapus riwayat")
+                return@setOnClickListener
+            }
             visited.clear()
-            historyFile.delete()
+            val deleted = try { !historyFile.exists() || historyFile.delete() } catch (_: Exception) { false }
             updateStatus(0, 0)
-            log("Riwayat dihapus.")
-            toast("Riwayat dihapus")
+            log(if (deleted) "Riwayat dihapus." else "Riwayat gagal dihapus.")
+            toast(if (deleted) "Riwayat dihapus" else "Gagal menghapus riwayat")
         }
 
         log("Siap. Seed: ${binding.etSeedUrl.text} | Riwayat: ${visited.size} post")
+    }
+
+    override fun onDestroy() {
+        stopRequested = true
+        activeCall?.cancel()
+        cancelWebViewRender?.invoke()
+        activityJob.cancel()
+        super.onDestroy()
     }
 
     // ---------- Riwayat ----------
@@ -285,144 +339,209 @@ class MainActivity : AppCompatActivity() {
     // ---------- Inti Crawler ----------
 
     private fun startCrawl() {
-        val seedRaw = binding.etSeedUrl.text.toString().trim()
-        if (seedRaw.isEmpty()) { toast("Isi URL seed dulu"); return }
+        if (crawlRunning) return
 
-        val seed = if (!seedRaw.startsWith("http://", true) &&
-            !seedRaw.startsWith("https://", true)) "https://$seedRaw" else seedRaw
+        val seedRaw = binding.etSeedUrl.text?.toString()?.trim().orEmpty()
+        if (seedRaw.isBlank()) {
+            binding.etSeedUrl.error = "URL seed wajib diisi"
+            toast("Isi URL seed dulu")
+            return
+        }
+        binding.etSeedUrl.error = null
 
+        val seed = if (
+            !seedRaw.startsWith("http://", true) &&
+            !seedRaw.startsWith("https://", true)
+        ) "https://$seedRaw" else seedRaw
+
+        val parsedSeed = try { URI(seed).normalize() } catch (_: Exception) { null }
+        val scheme = parsedSeed?.scheme?.lowercase(Locale.ROOT)
         val seedHost = seedHostOf(seed)
-        if (seedHost == null) { toast("URL seed tidak valid"); return }
+        if (parsedSeed == null || scheme !in setOf("http", "https") ||
+            seedHost.isNullOrBlank() || parsedSeed.userInfo != null
+        ) {
+            binding.etSeedUrl.error = "Masukkan URL HTTP/HTTPS yang valid"
+            toast("URL seed tidak valid")
+            return
+        }
+        binding.etSeedUrl.error = null
 
-        val maxPosts = binding.etMaxPosts.text.toString().toIntOrNull() ?: 10
-        val minChars = binding.etMinChars.text.toString().toIntOrNull() ?: 400
+        val maxPosts = binding.etMaxPosts.text?.toString()?.toIntOrNull()
+        if (maxPosts == null || maxPosts !in 1..1000) {
+            binding.etMaxPosts.error = "Masukkan angka 1–1000"
+            toast("Maks. post harus 1 sampai 1000")
+            return
+        }
+        binding.etMaxPosts.error = null
+
+        val minChars = binding.etMinChars.text?.toString()?.toIntOrNull()
+        if (minChars == null || minChars !in 80..20000) {
+            binding.etMinChars.error = "Masukkan angka 80–20000"
+            toast("Min. karakter harus 80 sampai 20000")
+            return
+        }
+        binding.etMinChars.error = null
+
         val useHistory = binding.swUseHistory.isChecked
         val minimalClean = binding.swClean.isChecked
 
         stopRequested = false
+        crawlRunning = true
+        setCrawlControls(enabled = false)
+        binding.progressBar.visibility = View.VISIBLE
+        binding.btnStop.isEnabled = true
+        binding.btnStart.isEnabled = false
 
-        CoroutineScope(Dispatchers.IO).launch {
-            withContext(Dispatchers.Main) {
-                binding.progressBar.visibility = View.VISIBLE
-                binding.btnStart.isEnabled = false
-                binding.btnStop.isEnabled = true
-            }
-
-            // File kerja incremental (cadangan jika aplikasi tertutup di tengah jalan).
+        activeCrawlJob = crawlerScope.launch {
             val workFile = File(filesDir, "corpus_work.txt")
-            try { workFile.writeText("") } catch (_: Exception) { }
-
-            val postQueue = ArrayDeque<String>()   // link yang mirip post (prioritas)
-            val pageQueue = ArrayDeque<String>()   // kategori/index (cadangan untuk cari link baru)
+            val postQueue = ArrayDeque<String>()
+            val pageQueue = ArrayDeque<String>()
             val queued = HashSet<String>()
             val posts = ArrayList<PostData>()
-
-            fun enqueue(link: String): Boolean {
-                if (!queued.add(link)) return false
-                if (isPostUrl(link)) postQueue.add(link) else pageQueue.add(link)
-                return true
-            }
-
-            enqueue(normalizeLink(seed, seed, seedHost) ?: seed)
-
             var collected = 0
             var crawledPages = 0
             var skippedVisited = 0
             var renderedPages = 0
-            val maxPages = maxOf(60, maxPosts * 8)
-
-            log("== MULAI CRAWL ==")
-            log("Seed : $seed")
-            log("Target: $maxPosts post | min. $minChars karakter | riwayat: ${if (useHistory) "ON" else "OFF"}")
-
-            while ((postQueue.isNotEmpty() || pageQueue.isNotEmpty()) &&
-                collected < maxPosts && !stopRequested
-            ) {
-                if (crawledPages >= maxPages) {
-                    log("\nBatas $maxPages halaman tercapai, crawl dihentikan.")
-                    break
-                }
-
-                val url = if (postQueue.isNotEmpty()) postQueue.removeFirst() else pageQueue.removeFirst()
-
-                if (useHistory && url in visited) { skippedVisited++; continue }
-                crawledPages++
-
-                log("\n[$collected/$maxPosts] halaman $crawledPages: $url")
-                updateStatus(collected, postQueue.size + pageQueue.size)
-
-                try {
-                    val res = processPage(url, seedHost, minChars, minimalClean)
-                    if (res.rendered) renderedPages++
-
-                    var newLinks = 0
-                    for (l in res.links) {
-                        if (enqueue(l)) newLinks++
-                    }
-                    log("   link baru: $newLinks | antrian post: ${postQueue.size} | antrian lain: ${pageQueue.size}")
-
-                    val p = res.post
-                    if (p != null) {
-                        collected++
-                        posts.add(p)
-                        markVisited(url)
-                        try {
-                            workFile.appendText(p.title + "\n" + p.lines.joinToString("\n") + "\n\n")
-                        } catch (_: Exception) { }
-                        val chars = p.lines.sumOf { it.length }
-                        log("   >>> POST DIAMBIL #$collected: ${p.title.take(60)} ($chars karakter)")
-                    } else if (res.isPost) {
-                        log("   (halaman post, tapi teks tidak terbaca atau < $minChars karakter — dilewati)")
-                    } else {
-                        log("   (halaman daftar/kategori — hanya diambil linknya)")
-                    }
-                } catch (e: Exception) {
-                    log("   ERROR: ${e.message}")
-                }
-
-                // Jeda sopan antar request.
-                if ((postQueue.isNotEmpty() || pageQueue.isNotEmpty()) && collected < maxPosts) delay(800)
-            }
-
-            // Simpan ke Download (teks bersih, tanpa link / garis pemisah).
-            val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
-            val fname = "korpus_crawl_${seedHost.replace(".", "_")}_$timestamp.txt"
-
-            var savedPath = "GAGAL"
+            var savedPath = "Belum disimpan"
             var totalChars = 0
             var totalWords = 0
-            if (posts.isNotEmpty()) {
-                try {
-                    val finalText = buildFinalText(posts)
-                    totalChars = finalText.length
-                    totalWords = finalText.split(wsRegex).count { it.isNotBlank() }
-                    saveToDownload(fname, finalText)
-                    savedPath = "Download/$fname"
-                    log("\n>>> DISIMPAN: $savedPath")
-                } catch (e: Exception) {
-                    log("\n>>> GAGAL simpan ke Download: ${e.message}")
-                    log("File kerja tersimpan di internal app: ${workFile.absolutePath}")
+            var fileSaved = false
+
+            try {
+                // File kerja hanya di-reset saat run baru benar-benar dimulai.
+                workFile.writeText("")
+
+                fun enqueue(link: String): Boolean {
+                    if (link.isBlank() || !queued.add(link)) return false
+                    if (isPostUrl(link)) postQueue.add(link) else pageQueue.add(link)
+                    return true
                 }
-            } else {
-                log("\nTidak ada post yang terkumpul (coba turunkan min. karakter, atau seed bukan situs blog/artikel).")
-            }
 
-            log("\n== SELESAI ==")
-            log("Post diambil : $collected")
-            log("Halaman crawl: $crawledPages (dirender WebView: $renderedPages)")
-            log("Dilewati     : $skippedVisited (sudah di riwayat)")
-            log("Total        : $totalChars karakter, $totalWords kata")
-            log("File         : $savedPath")
-            if (stopRequested) log("(dihentikan manual oleh user)")
+                enqueue(normalizeLink(seed, seed, seedHost) ?: seed)
 
-            withContext(Dispatchers.Main) {
-                binding.progressBar.visibility = View.GONE
-                binding.btnStart.isEnabled = true
-                binding.btnStop.isEnabled = false
-                updateStatus(collected, 0)
-                toast("Selesai: $collected post diambil")
+                val maxPages = maxOf(60, maxPosts * 8)
+                log("== MULAI CRAWL ==")
+                log("Seed : $seed")
+                log("Target: $maxPosts post | min. $minChars karakter | riwayat: ${if (useHistory) "ON" else "OFF"}")
+
+                while ((postQueue.isNotEmpty() || pageQueue.isNotEmpty()) &&
+                    collected < maxPosts && !stopRequested
+                ) {
+                    if (crawledPages >= maxPages) {
+                        log("\nBatas $maxPages halaman tercapai, crawl dihentikan.")
+                        break
+                    }
+
+                    val url = if (postQueue.isNotEmpty()) postQueue.removeFirst() else pageQueue.removeFirst()
+                    if (useHistory && url in visited) {
+                        skippedVisited++
+                        continue
+                    }
+
+                    crawledPages++
+                    log("\n[$collected/$maxPosts] halaman $crawledPages: $url")
+                    updateStatus(collected, postQueue.size + pageQueue.size)
+
+                    try {
+                        val res = processPage(url, seedHost, minChars, minimalClean)
+                        if (stopRequested) break
+                        if (res.rendered) renderedPages++
+
+                        var newLinks = 0
+                        for (link in res.links) {
+                            if (enqueue(link)) newLinks++
+                        }
+                        log("   link baru: $newLinks | antrian post: ${postQueue.size} | antrian lain: ${pageQueue.size}")
+
+                        val post = res.post
+                        if (post != null && post.lines.isNotEmpty()) {
+                            collected++
+                            posts.add(post)
+                            try {
+                                workFile.appendText(post.title + "\n" + post.lines.joinToString("\n") + "\n\n")
+                            } catch (e: Exception) {
+                                log("   Peringatan: file kerja gagal diperbarui: ${e.message}")
+                            }
+                            val chars = post.lines.sumOf { it.length }
+                            log("   >>> POST DIAMBIL #$collected: ${post.title.take(60)} ($chars karakter)")
+                        } else if (res.isPost) {
+                            log("   (halaman post, tapi teks tidak terbaca atau di bawah $minChars karakter — dilewati)")
+                        } else {
+                            log("   (halaman daftar/kategori — hanya diambil linknya)")
+                        }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        if (!stopRequested) log("   ERROR: ${e.message ?: e.javaClass.simpleName}")
+                    }
+
+                    if (!stopRequested &&
+                        (postQueue.isNotEmpty() || pageQueue.isNotEmpty()) &&
+                        collected < maxPosts
+                    ) delay(800)
+                }
+
+                val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
+                val fileName = "korpus_crawl_${seedHost.replace(".", "_")}_$timestamp.txt"
+
+                if (posts.isNotEmpty()) {
+                    val finalText = buildFinalText(posts)
+                    if (finalText.isBlank()) {
+                        log("\n>>> GAGAL: hasil teks kosong. Riwayat tidak diubah.")
+                    } else {
+                        totalChars = finalText.length
+                        totalWords = finalText.split(wsRegex).count { it.isNotBlank() }
+                        saveToDownload(fileName, finalText)
+                        // Riwayat hanya ditandai setelah berkas output berhasil disimpan.
+                        posts.forEach { markVisited(it.url) }
+                        savedPath = "Download/$fileName"
+                        fileSaved = true
+                        log("\n>>> DISIMPAN: $savedPath")
+                    }
+                } else {
+                    log("\nTidak ada post yang terkumpul. Periksa URL, koneksi, atau turunkan min. karakter.")
+                }
+
+                log("\n== SELESAI ==")
+                log("Post diambil : $collected")
+                log("Halaman crawl: $crawledPages (dirender WebView: $renderedPages)")
+                log("Dilewati     : $skippedVisited (sudah di riwayat)")
+                log("Total        : $totalChars karakter, $totalWords kata")
+                log("File         : $savedPath")
+                if (stopRequested) log("(dihentikan manual; hasil yang sudah terkumpul dipertahankan)")
+                if (!fileSaved && posts.isNotEmpty()) {
+                    log("Riwayat tidak diperbarui karena file hasil belum berhasil disimpan.")
+                }
+            } catch (e: CancellationException) {
+                log("Crawling dibatalkan.")
+                throw e
+            } catch (e: Exception) {
+                log("ERROR proses crawling: ${e.message ?: e.javaClass.simpleName}")
+                log("Hasil parsial: ${posts.size} post terkumpul.")
+            } finally {
+                withContext(NonCancellable + Dispatchers.Main) {
+                    crawlRunning = false
+                    activeCrawlJob = null
+                    if (!isFinishing && !isDestroyed) {
+                        binding.progressBar.visibility = View.GONE
+                        setCrawlControls(enabled = true)
+                        binding.btnStart.isEnabled = true
+                        binding.btnStop.isEnabled = false
+                        updateStatus(collected, 0)
+                        if (!isFinishing) toast(if (fileSaved) "Selesai: $collected post disimpan" else "Crawling selesai; periksa log")
+                    }
+                }
             }
         }
+    }
+
+    private fun setCrawlControls(enabled: Boolean) {
+        binding.etSeedUrl.isEnabled = enabled
+        binding.etMaxPosts.isEnabled = enabled
+        binding.etMinChars.isEnabled = enabled
+        binding.swUseHistory.isEnabled = enabled
+        binding.swClean.isEnabled = enabled
+        binding.btnClearHistory.isEnabled = enabled
     }
 
     // ---------- Proses satu halaman ----------
@@ -441,7 +560,8 @@ class MainActivity : AppCompatActivity() {
         val doc: Document? = try {
             Jsoup.parse(fetchHtml(url), url)
         } catch (e: Exception) {
-            val msg = e.message ?: ""
+            if (stopRequested) return PageResult(emptyList(), null, false, false)
+            val msg = e.message ?: e.javaClass.simpleName
             if (msg.startsWith("HTTP 404") || msg.startsWith("HTTP 410")) notFound = true
             log("   fetch biasa gagal: $msg")
             null
@@ -491,7 +611,7 @@ class MainActivity : AppCompatActivity() {
         if (isPost) {
             val title = pickTitle(doc, url)
             val lines = extractLines(doc, minimalClean, minChars)
-            if (lines.sumOf { it.length } >= minChars) post = PostData(title, lines)
+            if (lines.sumOf { it.length } >= minChars) post = PostData(url, title, lines)
         }
         return PageResult(links, post, isPost, false)
     }
@@ -506,13 +626,39 @@ class MainActivity : AppCompatActivity() {
             .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
             .build()
 
-        client.newCall(request).execute().use { resp ->
-            if (!resp.isSuccessful) throw Exception("HTTP ${resp.code}")
-            val type = resp.header("Content-Type")
-            if (type != null && !type.contains("html", true) && !type.contains("xml", true)) {
-                throw Exception("bukan halaman HTML ($type)")
+        val call = client.newCall(request)
+        activeCall = call
+        try {
+            call.execute().use { resp ->
+                if (!resp.isSuccessful) throw Exception("HTTP ${resp.code}")
+                val body = resp.body ?: throw Exception("body kosong")
+                val mediaType = body.contentType()
+                if (mediaType != null &&
+                    !mediaType.type.equals("text", true) &&
+                    !mediaType.subtype.contains("xml", true) &&
+                    !mediaType.subtype.contains("html", true)
+                ) {
+                    throw Exception("bukan halaman HTML (${mediaType})")
+                }
+
+                val output = ByteArrayOutputStream()
+                val buffer = ByteArray(8192)
+                body.byteStream().use { input ->
+                    while (true) {
+                        if (stopRequested) throw java.io.IOException("Crawl dihentikan")
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        if (output.size() + count > maxHtmlBytes) {
+                            throw Exception("halaman terlalu besar (maksimum 5 MB), dilewati")
+                        }
+                        output.write(buffer, 0, count)
+                    }
+                }
+                val charset = mediaType?.charset(Charsets.UTF_8) ?: Charsets.UTF_8
+                return output.toString(charset.name())
             }
-            return resp.body?.string() ?: throw Exception("body kosong")
+        } finally {
+            if (activeCall === call) activeCall = null
         }
     }
 
@@ -526,17 +672,21 @@ class MainActivity : AppCompatActivity() {
             withTimeoutOrNull(30_000L) {
                 withContext(Dispatchers.Main) {
                     suspendCancellableCoroutine<String?> { cont ->
-                        val wv = WebView(applicationContext)
+                        val wv = WebView(this@MainActivity)
                         val finished = AtomicBoolean(false)
 
                         fun finish(result: String?) {
                             if (!finished.compareAndSet(false, true)) return
+                            cancelWebViewRender = null
                             try {
                                 wv.stopLoading()
                                 wv.destroy()
                             } catch (_: Exception) { }
                             if (cont.isActive) cont.resume(result)
                         }
+
+                        // Callback ini dipanggil tombol Stop di main thread.
+                        cancelWebViewRender = { finish(null) }
 
                         wv.settings.javaScriptEnabled = true
                         wv.settings.domStorageEnabled = true
@@ -566,9 +716,13 @@ class MainActivity : AppCompatActivity() {
                         }
 
                         cont.invokeOnCancellation {
+                            cancelWebViewRender = null
                             if (finished.compareAndSet(false, true)) {
                                 wv.post {
-                                    try { wv.destroy() } catch (_: Exception) { }
+                                    try {
+                                        wv.stopLoading()
+                                        wv.destroy()
+                                    } catch (_: Exception) { }
                                 }
                             }
                         }
@@ -663,7 +817,7 @@ class MainActivity : AppCompatActivity() {
         val blockSel = "p, h2, h3, h4, h5, h6, li, blockquote, pre"
         val seen = LinkedHashSet<String>()
         for (el in node.select(blockSel)) {
-            if (el.select(blockSel).size > 1) continue   // kontainer: anak-anaknya diproses sendiri
+            if (el.select(blockSel).isNotEmpty()) continue   // proses blok terdalam agar teks parent tidak terduplikasi
             val raw = el.text()
             val t = cleanLine(raw)
             if (t.isEmpty() || t.none { it.isLetter() }) continue
@@ -731,19 +885,15 @@ class MainActivity : AppCompatActivity() {
      * Baris yang muncul di banyak post (boilerplate) dibuang.
      */
     private fun buildFinalText(posts: List<PostData>): String {
-        val freq = HashMap<String, Int>()
-        for (p in posts) {
-            for (l in p.lines.toSet()) freq[l] = (freq[l] ?: 0) + 1
-        }
-        val applyFilter = posts.size >= 4
-        val threshold = maxOf(3, (posts.size * 3 + 9) / 10)
-
+        // Jangan menghapus kalimat hanya karena muncul di banyak artikel:
+        // hal itu bisa membuang isi penting dan menghasilkan file kosong.
         val sb = StringBuilder()
-        for (p in posts) {
-            val kept = p.lines.filter { !(applyFilter && (freq[it] ?: 0) >= threshold) }
-            if (kept.isEmpty()) continue
-            sb.append(p.title).append('\n')
-            for (l in kept) sb.append(l).append('\n')
+        for (post in posts) {
+            val title = post.title.trim()
+            val lines = post.lines.map { it.trim() }.filter { it.isNotBlank() }
+            if (title.isBlank() || lines.isEmpty()) continue
+            sb.append(title).append('\n')
+            for (line in lines) sb.append(line).append('\n')
             sb.append('\n')
         }
         return sb.toString()
@@ -752,6 +902,8 @@ class MainActivity : AppCompatActivity() {
     // ---------- Simpan ke Download ----------
 
     private fun saveToDownload(fileName: String, content: String) {
+        if (content.isBlank()) throw Exception("Konten kosong; tidak ada file yang dibuat.")
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val values = ContentValues().apply {
                 put(MediaStore.Downloads.DISPLAY_NAME, fileName)
@@ -759,10 +911,18 @@ class MainActivity : AppCompatActivity() {
                 put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
             }
             val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-                ?: throw Exception("Gagal insert MediaStore")
-            contentResolver.openOutputStream(uri)?.use { os ->
-                OutputStreamWriter(os, Charsets.UTF_8).use { it.write(content) }
-            } ?: throw Exception("Gagal buka output stream")
+                ?: throw Exception("Gagal membuat file di Download")
+            var saved = false
+            try {
+                contentResolver.openOutputStream(uri)?.use { os ->
+                    OutputStreamWriter(os, Charsets.UTF_8).use { it.write(content) }
+                } ?: throw Exception("Gagal membuka file output")
+                saved = true
+            } finally {
+                if (!saved) {
+                    try { contentResolver.delete(uri, null, null) } catch (_: Exception) { }
+                }
+            }
         } else {
             if (ContextCompat.checkSelfPermission(
                     this, Manifest.permission.WRITE_EXTERNAL_STORAGE
@@ -771,10 +931,10 @@ class MainActivity : AppCompatActivity() {
                 ActivityCompat.requestPermissions(
                     this, arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE), storagePermCode
                 )
-                throw Exception("Izin storage belum diberikan")
+                throw Exception("Izin penyimpanan belum diberikan. Berikan izin lalu jalankan ulang.")
             }
             val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-            if (!dir.exists()) dir.mkdirs()
+            if (!dir.exists() && !dir.mkdirs()) throw Exception("Folder Download tidak bisa dibuat")
             File(dir, fileName).writeText(content, Charsets.UTF_8)
         }
     }
