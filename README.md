@@ -1,67 +1,49 @@
 # PostScraper Crawler — Aplikasi Native Android (Kotlin)
 
-Aplikasi native Android yang **merayap (crawl) otomatis** mulai dari 1 URL seed (mis. homepage blog), menemukan semua link postingan se-domain, masuk ke tiap post, mengambil & membersihkan teksnya, lalu menyimpannya sebagai file **`.txt`** di **`Internal Storage > Download`**.
+Aplikasi native Android yang **merayap (crawl) otomatis** mulai dari 1 URL seed (mis. homepage blog), masuk ke tiap postingan, mengambil **isi artikelnya saja**, lalu mencari postingan berikutnya. Hasilnya disimpan sebagai file **`.txt` bersih** di **`Internal Storage > Download`**.
 
-## Alur Crawler (sesuai permintaan)
-1. User paste URL awal (seed), mis. `https://jalansmut.blogspot.com`, lalu tentukan **maks. post** yang mau diambil (default 10).
-2. Aplikasi buka halaman seed, kumpulkan semua link, **filter yang se-domain** (host sama, `www` diabaikan), masukkan ke antrian BFS.
-3. Untuk tiap halaman:
-   - Jika berupa **postingan** (bukan index/search/label) dan teks ≥ ambang minimum → ambil semua teks, bersihkan minimal, tulis ke file.
-   - Link se-domain di dalam post otomatis **ditambahkan ke antrian** untuk dilanjutkan.
-   - Jika tidak ada link baru, otomatis lanjut ke antrian post lain (BFS).
-4. **Riwayat anti-dobel**: URL yang pernah diambil disimpan permanen ke file, sehingga run berikutnya tidak mengulang post yang sama. Bisa di-toggle ON/OFF dan dihapus.
-5. Bisa **Stop** kapan saja — hasil yang sudah terkumpul tetap disimpan.
+## Alur Crawler
+1. Isi URL awal (seed), mis. `https://jalantikus.com`, dan **maks. post** yang mau diambil.
+2. Halaman diambil lewat HTTP biasa. Jika isinya kosong (situs dirender JavaScript), halaman otomatis **dirender ulang dengan WebView** lalu dibaca.
+3. Semua link se-domain dikumpulkan. Link yang mirip **postingan** (slug panjang, `.html`, path bertanggal) masuk antrian prioritas; halaman kategori/index (`/tips`, `/gadgets`, `/page/2`, dst.) hanya dipakai untuk mencari link baru.
+4. Tiap postingan: ambil judul + isi artikel, buang menu, footer, sidebar, iklan, komentar, "Baca juga", **link**, dan **garis pemisah (`=====`)**.
+5. Dari dalam postingan, link post lain ikut diantrikan, jadi crawl berlanjut dari post ke post.
+6. Baris yang berulang di banyak post (boilerplate) dibuang di akhir, lalu file disimpan.
+7. **Riwayat anti-dobel** hanya mencatat post yang benar-benar berhasil diambil. Bisa di-toggle ON/OFF dan dihapus.
+8. **Stop** kapan saja — hasil yang sudah terkumpul tetap disimpan.
 
-## Kriteria korpus terpenuhi
-- **Teks mentah (raw)** — hanya strip tag HTML; toggle "Pembersihan minimal" ON/OFF.
-- **Volume cukup** — crawl otomatis, tentukan sendiri jumlah post (10, 50, 100…).
-- **Representatif** — tiap post disertai judul + URL sumber sebagai header.
-- **Pembersihan minimal** — ON: buang `script/style/iframe/iklan(ins)/form/komentar`, rapikan spasi. OFF: raw total.
+## Format file hasil
+Teks polos, tanpa header, tanpa link, tanpa garis pemisah. Satu post = judul, lalu paragraf satu per baris, lalu satu baris kosong:
+```
+Judul Post Pertama
+Paragraf pertama isi artikel.
+Paragraf kedua isi artikel.
+
+Judul Post Kedua
+Paragraf pertama ...
+```
+Nama file: `korpus_crawl_<domain>_<timestamp>.txt`.
 
 ## Cara Build
-1. Buka **Android Studio** → `Open` → folder `PostScraper`.
+1. Buka **Android Studio** → `Open` → folder proyek.
 2. Tunggu Gradle sync (OkHttp, Jsoup, Coroutines terunduh otomatis).
 3. Run ke HP Android (USB debugging) atau emulator.
 4. Min SDK 24 (Android 7.0), target SDK 34. Android 10+ tidak perlu izin storage (pakai `MediaStore.Downloads`).
 
 ### Build APK otomatis (GitHub Actions)
-Setiap push ke `main` menjalankan workflow **Build APK**. Unduh hasilnya di tab **Actions** → run terbaru → **Artifacts** → `PostScraper-debug-apk`.
-
-## Cara Pakai
-1. Isi **URL awal** (seed) — default sudah terisi contoh blogspot.
-2. Atur **Maks. post diambil** (mis. 10) dan **Min. karakter/post** (default 400, untuk menyaring halaman index).
-3. Aktifkan **Lewati post yang pernah diambil** (riwayat) — disarankan ON.
-4. Tekan **Mulai Crawling**. Lihat progres di log. Tekan **Stop** kapan saja.
-5. Setelah selesai, file `korpus_crawl_<domain>_<timestamp>.txt` tersimpan di **`Download/`**.
-
-## Format file hasil
-```
-KORPUS TEKS — PostScraper Crawler
-Dibuat     : 2026-10-18 14:30:00
-Seed       : https://jalansmut.blogspot.com
-Domain     : jalansmut.blogspot.com
-Target     : maks. 10 post (min. 400 karakter)
-Bersih     : minimal
-Encoding   : UTF-8
-================================================================
-
-===== POST #1 =====
-Judul : Contoh Judul Postingan
-URL   : https://jalansmut.blogspot.com/2024/05/judul.html
-------------------------------------------------
-
-... teks mentah postingan ...
-```
+Jika file `.github/workflows/build-apk.yml` ada, setiap push ke `main` menjalankan workflow **Build APK**. Unduh hasilnya di tab **Actions** → run terbaru → **Artifacts** → `PostScraper-debug-apk`.
 
 ## Catatan Penting
-- Hormati **Terms of Service** situs target. Aplikasi ini mengambil HTML statis publik.
-- Situs dengan konten JavaScript-heavy (SPA, login wall) tidak terambil penuh — gunakan API resmi platform tersebut.
+- Hormati **Terms of Service** situs target.
+- Halaman yang dirender WebView lebih lambat (sekitar 3–5 detik per halaman).
+- Situs dengan login wall atau proteksi bot tidak bisa diambil.
 - Jeda antar request 800 ms (sopan) — bisa diubah di kode (`delay(800)`).
-- Riwayat disimpan di internal app (`filesDir/visited_history.txt`) — tombol **Hapus Riwayat** untuk reset.
+- Riwayat disimpan di internal app (`filesDir/posts_history.txt`) — tombol **Hapus Riwayat** untuk reset.
+- Toggle "Pembersihan" OFF = tidak membuang menu/footer/iklan, tetapi link dan garis pemisah tetap dibuang.
 
 ## Teknologi
-- Kotlin + Coroutines (async crawl di background, bisa di-stop)
+- Kotlin + Coroutines (crawl di background, bisa di-stop)
 - OkHttp 4.12 (HTTP client)
 - Jsoup 1.17 (parsing HTML, ekstrak link & teks)
-- BFS queue + riwayat persist (file-based dedup)
+- WebView (render halaman JavaScript)
 - MediaStore.Downloads (Android 10+) / direct file (≤9)

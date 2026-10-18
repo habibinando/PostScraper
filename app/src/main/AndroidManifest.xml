@@ -16,8 +16,10 @@
         android:usesCleartextTraffic="true"
         android:theme="@style/Theme.PostScraper">
 
+        <!-- configChanges: layar diputar tidak me-restart Activity (crawl tetap tampil di log) -->
         <activity
             android:name=".MainActivity"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
