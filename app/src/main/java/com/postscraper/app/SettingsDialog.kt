@@ -90,17 +90,7 @@ internal class SettingsDialog(
         content.addView(localModelEnabled)
         addCaption("Impor akan menyalin file model ke ruang aplikasi (sekitar 2 GB untuk Q4_K_M). File asli tidak dihapus. Gunakan HP dengan ruang kosong memadai; pemrosesan memakai CPU, RAM, dan baterai.")
 
-        addCaption("FIRECRAWL — fallback cloud untuk halaman yang gagal dibaca")
-        val firecrawlKey = addField("Firecrawl API key", current.firecrawlApiKey, password = true)
-        val firecrawlEnabled = MaterialSwitch(activity).apply {
-            text = "Aktifkan Firecrawl sebagai fallback"
-            isChecked = current.useFirecrawl
-            textSize = 14f
-            setPadding(2, 8, 2, 4)
-        }
-        content.addView(firecrawlEnabled)
-
-        addCaption("PROXY HTTP — hanya gunakan proxy yang kamu percaya")
+        addCaption("PROXY HTTP — hanya gunakan proxy yang kamu percaya")        addCaption("PROXY HTTP — hanya gunakan proxy yang kamu percaya")
         val proxyEnabled = MaterialSwitch(activity).apply {
             text = "Gunakan proxy manual"
             isChecked = current.proxyEnabled
@@ -122,17 +112,12 @@ internal class SettingsDialog(
 
         dialog.setOnShowListener {
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-                val keyFirecrawl = firecrawlKey.text?.toString()?.trim().orEmpty()
                 val host = proxyHost.text?.toString()?.trim().orEmpty()
                 val port = proxyPort.text?.toString()?.trim()?.toIntOrNull() ?: 0
                 val modelPath = store.load().localModelPath
 
                 if (localModelEnabled.isChecked && (modelPath.isBlank() || !File(modelPath).isFile)) {
                     Toast.makeText(activity, "Pilih file GGUF terlebih dahulu", Toast.LENGTH_LONG).show()
-                    return@setOnClickListener
-                }
-                if (firecrawlEnabled.isChecked && keyFirecrawl.isBlank()) {
-                    firecrawlKey.error = "Isi API key atau nonaktifkan Firecrawl"
                     return@setOnClickListener
                 }
                 if (proxyEnabled.isChecked && host.isBlank()) {
@@ -146,8 +131,6 @@ internal class SettingsDialog(
 
                 store.save(
                     store.load().copy(
-                        firecrawlApiKey = keyFirecrawl,
-                        useFirecrawl = firecrawlEnabled.isChecked,
                         useLocalModelCleaning = localModelEnabled.isChecked,
                         proxyEnabled = proxyEnabled.isChecked,
                         proxyHost = host,

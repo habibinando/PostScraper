@@ -103,37 +103,10 @@ internal class CrawlEngine(
                     if (duplicate) {
                         log("   post duplikat tidak disimpan (URL kanonis sudah ada).")
                     } else {
-                        var finalPost = post
-                        if (options.useLocalModelCleaning && options.localModelPath.isNotBlank()) {
-                            try {
-                                val cleaned = localModelCleaner.clean(
-                                    title = post.title,
-                                    text = post.lines.joinToString("\n"),
-                                    modelPath = options.localModelPath
-                                )
-                                if (!cleaned.isNullOrBlank()) {
-                                    val cleanedLines = cleaned.lineSequence()
-                                        .map { it.trim() }
-                                        .filter { it.isNotBlank() }
-                                        .distinct()
-                                        .toList()
-                                    val cleanedChars = cleanedLines.sumOf { it.length }
-                                    val originalChars = post.lines.sumOf { it.length }
-                                    if (cleanedLines.isNotEmpty() && cleanedChars >= minOf(120, originalChars / 3)) {
-                                        finalPost = post.copy(lines = cleanedLines)
-                                        log("   Qwen lokal merapikan teks artikel.")
-                                    } else {
-                                        log("   Hasil model lokal terlalu pendek; teks asli dipertahankan.")
-                                    }
-                                }
-                            } catch (e: Exception) {
-                                log("   Model lokal gagal: " + (e.message ?: e.javaClass.simpleName) + ". Teks asli dipertahankan.")
-                            }
-                        }
                         collected++
-                        posts.add(finalPost)
-                        val chars = finalPost.lines.sumOf { it.length }
-                        log("   >>> POST DIAMBIL #$collected: ${finalPost.title.take(60)} ($chars karakter)")
+                        posts.add(post)
+                        val chars = post.lines.sumOf { it.length }
+                        log("   >>> POST DIAMBIL #$collected: ${post.title.take(60)} ($chars karakter)")
                     }
                 } else if (result.isPost) {
                     log("   (teks artikel tidak terbaca atau totalnya masih di bawah ${options.minChars} karakter)")
@@ -157,7 +130,7 @@ internal class CrawlEngine(
         log("Halaman WebView: $renderedPages")
         log("Sudah di riwayat: $skippedVisited")
         if (stopCheck()) log("(crawling dihentikan; hasil yang sudah terkumpul dipertahankan)")
-        if (posts.isEmpty()) log("Tidak ada post yang terkumpul. Coba turunkan min. karakter atau aktifkan Jina Reader.")
+        if (posts.isEmpty()) log("Belum ada post yang berhasil diekstrak. Coba URL artikel langsung atau pastikan situs bisa diakses.")
         return CrawlSummary(
             posts = posts.toList(),
             pagesProcessed = crawledPages,

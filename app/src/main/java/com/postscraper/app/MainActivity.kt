@@ -58,11 +58,9 @@ class MainActivity : AppCompatActivity() {
     private val networkClients by lazy(LazyThreadSafetyMode.NONE) { NetworkClientFactory(settingsStore) }
     private val pageLoader by lazy(LazyThreadSafetyMode.NONE) { PageLoader(this, { stopRequested }, networkClients) }
     private val textExporter by lazy(LazyThreadSafetyMode.NONE) { TextExporter(this) }
-    private val remoteReader by lazy(LazyThreadSafetyMode.NONE) { RemoteReader(networkClients) }
-    private val firecrawlReader by lazy(LazyThreadSafetyMode.NONE) { FirecrawlReader(networkClients) }
-    private val localModelCleaner by lazy(LazyThreadSafetyMode.NONE) { LocalModelCleaner() }
+    private val localModelCleaner by lazy(LazyThreadSafetyMode.NONE) { LocalModelCleaner { stopRequested } }
     private val crawlEngine by lazy(LazyThreadSafetyMode.NONE) {
-        CrawlEngine(pageLoader, remoteReader, firecrawlReader, localModelCleaner)
+        CrawlEngine(pageLoader, localModelCleaner)
     }
     private val modelPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) importLocalModel(uri)
@@ -141,7 +139,7 @@ class MainActivity : AppCompatActivity() {
             if (!crawlRunning) return@setOnClickListener
             stopRequested = true
             pageLoader.cancelCurrent()
-            log(">> Stop diminta. Hasil yang sudah terkumpul tetap akan disimpan.")
+            log(">> STOP: permintaan jaringan/WebView dibatalkan. Hasil yang sudah terkumpul tetap disimpan.")
         }
         binding.btnClearHistory.setOnClickListener {
             if (crawlRunning) {
@@ -155,7 +153,7 @@ class MainActivity : AppCompatActivity() {
             toast(if (deleted) "Riwayat dihapus" else "Gagal menghapus riwayat")
         }
 
-        log("Siap. Seed: ${binding.etSeedUrl.text} | Riwayat: ${visited.size} post")
+        log("Siap. Seed: ${binding.etSeedUrl.text} | Riwayat: ${visited.size} post | fallback: HTML → AMP → WebView → Qwen lokal")
     }
 
     override fun onDestroy() {
@@ -232,8 +230,13 @@ class MainActivity : AppCompatActivity() {
 
         val useHistory = binding.swUseHistory.isChecked
         val minimalClean = binding.swClean.isChecked
-        val useRemoteReader = binding.swUseReader.isChecked
         val appSettings = settingsStore.load()
+        if (appSettings.useLocalModelCleaning &&
+            (appSettings.localModelPath.isBlank() || !File(appSettings.localModelPath).isFile)
+        ) {
+            toast("Pilih model GGUF di Pengaturan, atau nonaktifkan fallback Qwen lokal")
+            return
+        }
 
         stopRequested = false
         crawlRunning = true
@@ -261,10 +264,7 @@ class MainActivity : AppCompatActivity() {
                     minChars = minChars,
                     useHistory = useHistory,
                     minimalClean = minimalClean,
-                    useRemoteReader = useRemoteReader,
                     historySnapshot = visited.toSet(),
-                    firecrawlApiKey = appSettings.firecrawlApiKey,
-                    useFirecrawl = appSettings.useFirecrawl,
                     localModelPath = appSettings.localModelPath,
                     useLocalModelCleaning = appSettings.useLocalModelCleaning
                 )
@@ -435,7 +435,6 @@ class MainActivity : AppCompatActivity() {
         binding.etMinChars.isEnabled = enabled
         binding.swUseHistory.isEnabled = enabled
         binding.swClean.isEnabled = enabled
-        binding.swUseReader.isEnabled = enabled
         binding.btnClearHistory.isEnabled = enabled
     }
 

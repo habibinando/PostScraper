@@ -7,7 +7,6 @@ PostScraper crawls a website from a seed URL, extracts article text, merges mult
 - Native Android app; minimum Android API 26.
 - Crawls same-domain links with article URLs prioritized over category pages.
 - Local extraction using Jsoup, with AMP fallback for JalanTikus and JavaScript rendering via WebView.
-- Optional **Jina Reader** fallback for pages that ordinary HTML, AMP, and WebView cannot read.
 - Pagination-aware merging: attempts to combine up to 12 pages of the same article into one corpus entry.
 - Filters common navigation, sidebar, ad, sharing, related-content, and comment elements.
 - Keeps an anti-duplicate history of successfully exported canonical article URLs.
@@ -18,10 +17,8 @@ PostScraper crawls a website from a seed URL, extracts article text, merges mult
 
 1. Fetch regular HTML on-device.
 2. When needed, try the site's AMP route if a known AMP fallback exists.
-3. If the optional Jina Reader switch is enabled, request clean Markdown from the Reader service.
-4. Try WebView rendering as a final fallback.
-
-The Jina Reader service is external. When the switch is enabled, URLs sent to fallback may be processed by that service. Anonymous Reader requests have published rate limits; failures, bot protection, login walls, or site changes can still prevent extraction. No scraping tool can guarantee every website or article layout.
+3. If article content is still too short, render the page through WebView to execute JavaScript.
+4. If the parser still cannot identify the article, optionally use the local Qwen GGUF model as the final extraction fallback.
 
 ## Article pagination
 
@@ -66,11 +63,6 @@ The GitHub Actions workflow `Build APK` runs on each push to `main`. Open the la
 Respect the target site's Terms of Service, robots/access policies, copyright, rate limits, and content ownership. Do not use PostScraper to bypass login controls or technical access restrictions.
 
 
-## Optional provider settings
+## On-device article extraction fallback
 
-The hamburger menu contains:
-- Local GGUF model: import a GGUF file such as Qwen2.5-3B-Instruct-Abliterated.Q4_K_M.gguf. On-device inference uses llama.cpp and does not require a Groq key or per-request API quota. The import copies the model into app-specific storage; the original is not deleted, so allow around 2 GB or more of extra free space.
-- Firecrawl: optional cloud scrape fallback for article pages that local HTML/AMP extraction cannot read. It requires your API key and may consume service credits.
-- HTTP proxy: optional manual host and port for a trusted proxy. The app does not harvest or rotate public proxies.
-
-The local model only cleans extracted text. It does not bypass site protections or make scraping itself offline. If the existing Jina Reader fallback or Firecrawl is enabled, URLs/content may still be sent to those external services. Disable those options to avoid those cloud fallbacks. Local inference uses CPU/RAM/battery and can be slow on mobile devices.
+The hamburger settings allow importing Qwen2.5-3B-Instruct-Abliterated.Q4_K_M.gguf. The model runs only as the final fallback when HTML, AMP, and WebView have not produced enough article text. No external reader or scraping API is used. Article fetching still requires an internet connection, but final extraction runs on-device. If an inference is already running, Stop may need to wait for that one model call to return.

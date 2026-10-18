@@ -7,8 +7,6 @@ import java.net.Proxy
 import java.util.concurrent.TimeUnit
 
 internal data class AppSettings(
-    val firecrawlApiKey: String = "",
-    val useFirecrawl: Boolean = false,
     val localModelPath: String = "",
     val useLocalModelCleaning: Boolean = false,
     val proxyEnabled: Boolean = false,
@@ -25,12 +23,12 @@ internal class AppSettingsStore(context: Context) {
             .remove("groq_api_key")
             .remove("groq_model")
             .remove("use_groq_cleaning")
+            .remove("firecrawl_api_key")
+            .remove("use_firecrawl")
             .apply()
     }
 
     fun load(): AppSettings = AppSettings(
-        firecrawlApiKey = preferences.getString("firecrawl_api_key", "").orEmpty(),
-        useFirecrawl = preferences.getBoolean("use_firecrawl", false),
         localModelPath = preferences.getString("local_model_path", "").orEmpty(),
         useLocalModelCleaning = preferences.getBoolean("use_local_model_cleaning", false),
         proxyEnabled = preferences.getBoolean("proxy_enabled", false),
@@ -40,8 +38,6 @@ internal class AppSettingsStore(context: Context) {
 
     fun save(settings: AppSettings) {
         preferences.edit()
-            .putString("firecrawl_api_key", settings.firecrawlApiKey)
-            .putBoolean("use_firecrawl", settings.useFirecrawl)
             .putString("local_model_path", settings.localModelPath)
             .putBoolean("use_local_model_cleaning", settings.useLocalModelCleaning)
             .putBoolean("proxy_enabled", settings.proxyEnabled)
@@ -67,9 +63,9 @@ internal class NetworkClientFactory(private val settingsStore: AppSettingsStore)
         synchronized(this) {
             if (cachedClient == null || cachedFingerprint != fingerprint) {
                 val builder = OkHttpClient.Builder()
-                    .connectTimeout(18, TimeUnit.SECONDS)
-                    .readTimeout(45, TimeUnit.SECONDS)
-                    .callTimeout(60, TimeUnit.SECONDS)
+                    .connectTimeout(8, TimeUnit.SECONDS)
+                    .readTimeout(12, TimeUnit.SECONDS)
+                    .callTimeout(18, TimeUnit.SECONDS)
                     .followRedirects(true)
                     .retryOnConnectionFailure(true)
 
