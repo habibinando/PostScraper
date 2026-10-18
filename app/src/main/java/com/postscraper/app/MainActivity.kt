@@ -1,13 +1,19 @@
 package com.postscraper.app
 
 import android.Manifest
+import android.app.ProgressDialog
+import android.net.Uri
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.os.StatFs
+import android.provider.OpenableColumns
 import android.text.method.ScrollingMovementMethod
 import android.view.View
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.lifecycle.lifecycleScope
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
@@ -23,6 +29,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.IOException
 import java.io.FileWriter
 import java.net.URI
 import java.text.SimpleDateFormat
@@ -53,9 +60,12 @@ class MainActivity : AppCompatActivity() {
     private val textExporter by lazy(LazyThreadSafetyMode.NONE) { TextExporter(this) }
     private val remoteReader by lazy(LazyThreadSafetyMode.NONE) { RemoteReader(networkClients) }
     private val firecrawlReader by lazy(LazyThreadSafetyMode.NONE) { FirecrawlReader(networkClients) }
-    private val groqCleaner by lazy(LazyThreadSafetyMode.NONE) { GroqCleaner(networkClients) }
+    private val localModelCleaner by lazy(LazyThreadSafetyMode.NONE) { LocalModelCleaner() }
     private val crawlEngine by lazy(LazyThreadSafetyMode.NONE) {
-        CrawlEngine(pageLoader, remoteReader, firecrawlReader, groqCleaner)
+        CrawlEngine(pageLoader, remoteReader, firecrawlReader, localModelCleaner)
+    }
+    private val modelPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) importLocalModel(uri)
     }
 
     // Semua pekerjaan crawl terikat ke lifecycle Activity; tidak membuat scope liar per tombol.
@@ -82,7 +92,11 @@ class MainActivity : AppCompatActivity() {
             if (crawlRunning) {
                 toast("Hentikan crawling sebelum mengubah pengaturan")
             } else {
-                SettingsDialog(this, settingsStore, groqCleaner).show {
+                SettingsDialog(
+                    activity = this,
+                    store = settingsStore,
+                    onPickModel = { modelPicker.launch(arrayOf("*/*")) }
+                ).show {
                     log("Pengaturan tersimpan.")
                 }
             }
@@ -251,9 +265,8 @@ class MainActivity : AppCompatActivity() {
                     historySnapshot = visited.toSet(),
                     firecrawlApiKey = appSettings.firecrawlApiKey,
                     useFirecrawl = appSettings.useFirecrawl,
-                    groqApiKey = appSettings.groqApiKey,
-                    groqModel = appSettings.groqModel,
-                    useGroqCleaning = appSettings.useGroqCleaning
+                    localModelPath = appSettings.localModelPath,
+                    useLocalModelCleaning = appSettings.useLocalModelCleaning
                 )
                 val result = crawlEngine.crawl(
                     options = options,
@@ -306,6 +319,9 @@ class MainActivity : AppCompatActivity() {
                 log("ERROR proses crawling: ${e.message ?: e.javaClass.simpleName}")
                 log("Hasil parsial: ${posts.size} post terkumpul.")
             } finally {
+                try {
+                    withContext(NonCancellable + Dispatchers.IO) { localModelCleaner.release() }
+                } catch (_: Exception) { }
                 withContext(NonCancellable + Dispatchers.Main) {
                     crawlRunning = false
                     activeCrawlJob = null
@@ -318,6 +334,97 @@ class MainActivity : AppCompatActivity() {
                         if (!isFinishing) toast(if (fileSaved) "Selesai: $collected post disimpan" else "Crawling selesai; periksa log")
                     }
                 }
+            }
+        }
+    }
+
+    private fun importLocalModel(uri: Uri) {
+        if (crawlRunning) {
+            toast("Hentikan crawling sebelum mengganti model")
+            return
+        }
+
+        val progress = ProgressDialog(this).apply {
+            setTitle("Memasang model lokal")
+            setMessage("Menyalin file GGUF ke ruang aplikasi. Model sekitar 2 GB memerlukan ruang kosong tambahan.")
+            setCancelable(false)
+            show()
+        }
+
+        lifecycleScope.launch {
+            try {
+                val modelPath = withContext(Dispatchers.IO) {
+                    localModelCleaner.release()
+                    val metadata = contentResolver.query(
+                        uri,
+                        arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE),
+                        null,
+                        null,
+                        null
+                    )?.use { cursor ->
+                        if (!cursor.moveToFirst()) null else {
+                            val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                            val sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE)
+                            val name = if (nameIndex >= 0) cursor.getString(nameIndex) else null
+                            val size = if (sizeIndex >= 0 && !cursor.isNull(sizeIndex)) cursor.getLong(sizeIndex) else null
+                            Pair(name ?: "model.gguf", size)
+                        }
+                    } ?: Pair("model.gguf", null)
+
+                    if (!metadata.first.endsWith(".gguf", ignoreCase = true)) {
+                        throw IOException("Pilih file yang berakhiran .gguf")
+                    }
+
+                    val modelDir = getExternalFilesDir("models") ?: File(filesDir, "models")
+                    if (!modelDir.exists() && !modelDir.mkdirs()) {
+                        throw IOException("Folder penyimpanan model tidak bisa dibuat")
+                    }
+                    val requiredBytes = (metadata.second ?: 0L) + 128L * 1024L * 1024L
+                    if (StatFs(modelDir.absolutePath).availableBytes < requiredBytes) {
+                        throw IOException("Ruang kosong tidak cukup. Butuh file model plus ruang sementara untuk impor.")
+                    }
+
+                    val temporary = File(modelDir, "qwen-model.gguf.part")
+                    if (temporary.exists()) temporary.delete()
+                    val input = contentResolver.openInputStream(uri)
+                        ?: throw IOException("File model tidak bisa dibuka")
+                    input.use { source ->
+                        temporary.outputStream().buffered(1024 * 1024).use { output ->
+                            source.copyTo(output, 1024 * 1024)
+                        }
+                    }
+
+                    if (temporary.length() < 100L * 1024L * 1024L) {
+                        temporary.delete()
+                        throw IOException("File terlalu kecil atau bukan model GGUF lengkap")
+                    }
+
+                    val destination = File(modelDir, "qwen-model.gguf")
+                    if (destination.exists() && !destination.delete()) {
+                        temporary.delete()
+                        throw IOException("Model lama tidak bisa diganti")
+                    }
+                    if (!temporary.renameTo(destination)) {
+                        temporary.copyTo(destination, overwrite = true)
+                        temporary.delete()
+                    }
+
+                    settingsStore.save(
+                        settingsStore.load().copy(
+                            localModelPath = destination.absolutePath,
+                            useLocalModelCleaning = true
+                        )
+                    )
+                    destination.absolutePath
+                }
+
+                log("Model lokal terpasang: " + File(modelPath).name)
+                toast("Model lokal berhasil dipasang")
+            } catch (e: Exception) {
+                log("Gagal memasang model lokal: " + (e.message ?: e.javaClass.simpleName))
+                toast("Gagal memasang model: " + (e.message ?: "periksa ruang penyimpanan"))
+            } finally {
+                try { progress.dismiss() } catch (_: Exception) { }
             }
         }
     }

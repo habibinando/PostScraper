@@ -1,8 +1,6 @@
 package com.postscraper.app
 
 import android.text.InputType
-import android.os.Handler
-import android.os.Looper
 import android.view.ViewGroup
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -14,12 +12,13 @@ import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.materialswitch.MaterialSwitch
 import com.google.android.material.textfield.TextInputEditText
 import com.google.android.material.textfield.TextInputLayout
+import java.io.File
 
-/** Compact settings editor opened from the top hamburger button. */
+/** Settings editor opened from the top hamburger button. */
 internal class SettingsDialog(
     private val activity: AppCompatActivity,
     private val store: AppSettingsStore,
-    private val groqCleaner: GroqCleaner
+    private val onPickModel: () -> Unit
 ) {
     fun show(onSaved: () -> Unit) {
         val current = store.load()
@@ -69,7 +68,29 @@ internal class SettingsDialog(
             return edit
         }
 
-        addCaption("FIRECRAWL — fallback cloud saat HTML lokal tidak cukup")
+        addCaption("MODEL AI LOKAL — inferensi berjalan di HP, tanpa kuota API")
+        val modelFile = File(current.localModelPath)
+        val modelInfo = TextView(activity).apply {
+            text = if (current.localModelPath.isNotBlank() && modelFile.isFile) {
+                "Model terpasang: " + modelFile.name + "\nLokasi aplikasi: " + modelFile.parent
+            } else {
+                "Belum ada model GGUF. Pilih file Qwen2.5-3B-Instruct-Abliterated.Q4_K_M.gguf dari penyimpanan HP."
+            }
+            textSize = 13f
+            setPadding(4, 6, 4, 8)
+        }
+        content.addView(modelInfo)
+
+        val localModelEnabled = MaterialSwitch(activity).apply {
+            text = "Gunakan Qwen lokal untuk membersihkan teks"
+            isChecked = current.useLocalModelCleaning
+            textSize = 14f
+            setPadding(2, 8, 2, 4)
+        }
+        content.addView(localModelEnabled)
+        addCaption("Impor akan menyalin file model ke ruang aplikasi (sekitar 2 GB untuk Q4_K_M). File asli tidak dihapus. Gunakan HP dengan ruang kosong memadai; pemrosesan memakai CPU, RAM, dan baterai.")
+
+        addCaption("FIRECRAWL — fallback cloud untuk halaman yang gagal dibaca")
         val firecrawlKey = addField("Firecrawl API key", current.firecrawlApiKey, password = true)
         val firecrawlEnabled = MaterialSwitch(activity).apply {
             text = "Aktifkan Firecrawl sebagai fallback"
@@ -78,18 +99,6 @@ internal class SettingsDialog(
             setPadding(2, 8, 2, 4)
         }
         content.addView(firecrawlEnabled)
-
-        addCaption("GROQ — AI untuk membersihkan hasil teks, bukan untuk mengambil halaman")
-        val groqKey = addField("Groq API key", current.groqApiKey, password = true)
-        val groqModel = addField("Model ID", current.groqModel)
-        val groqEnabled = MaterialSwitch(activity).apply {
-            text = "Gunakan Groq untuk merapikan teks"
-            isChecked = current.useGroqCleaning
-            textSize = 14f
-            setPadding(2, 8, 2, 4)
-        }
-        content.addView(groqEnabled)
-        addCaption("Gunakan tombol “Muat model Groq” di bawah untuk mengambil daftar model dari API. Model yang tampil belum tentu mempunyai kuota gratis pada akunmu.")
 
         addCaption("PROXY HTTP — hanya gunakan proxy yang kamu percaya")
         val proxyEnabled = MaterialSwitch(activity).apply {
@@ -108,23 +117,22 @@ internal class SettingsDialog(
             .setView(scroll)
             .setNegativeButton("Batal", null)
             .setPositiveButton("Simpan", null)
-            .setNeutralButton("Muat model Groq", null)
+            .setNeutralButton("Pilih file GGUF", null)
             .create()
 
         dialog.setOnShowListener {
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
                 val keyFirecrawl = firecrawlKey.text?.toString()?.trim().orEmpty()
-                val keyGroq = groqKey.text?.toString()?.trim().orEmpty()
-                val model = groqModel.text?.toString()?.trim().orEmpty()
                 val host = proxyHost.text?.toString()?.trim().orEmpty()
                 val port = proxyPort.text?.toString()?.trim()?.toIntOrNull() ?: 0
+                val modelPath = store.load().localModelPath
 
-                if (firecrawlEnabled.isChecked && keyFirecrawl.isBlank()) {
-                    firecrawlKey.error = "Isi API key atau nonaktifkan Firecrawl"
+                if (localModelEnabled.isChecked && (modelPath.isBlank() || !File(modelPath).isFile)) {
+                    Toast.makeText(activity, "Pilih file GGUF terlebih dahulu", Toast.LENGTH_LONG).show()
                     return@setOnClickListener
                 }
-                if (groqEnabled.isChecked && keyGroq.isBlank()) {
-                    groqKey.error = "Isi API key atau nonaktifkan Groq"
+                if (firecrawlEnabled.isChecked && keyFirecrawl.isBlank()) {
+                    firecrawlKey.error = "Isi API key atau nonaktifkan Firecrawl"
                     return@setOnClickListener
                 }
                 if (proxyEnabled.isChecked && host.isBlank()) {
@@ -137,12 +145,10 @@ internal class SettingsDialog(
                 }
 
                 store.save(
-                    AppSettings(
+                    store.load().copy(
                         firecrawlApiKey = keyFirecrawl,
                         useFirecrawl = firecrawlEnabled.isChecked,
-                        groqApiKey = keyGroq,
-                        groqModel = model.ifBlank { "openai/gpt-oss-20b" },
-                        useGroqCleaning = groqEnabled.isChecked,
+                        useLocalModelCleaning = localModelEnabled.isChecked,
                         proxyEnabled = proxyEnabled.isChecked,
                         proxyHost = host,
                         proxyPort = if (port in 1..65535) port else 8080
@@ -154,34 +160,8 @@ internal class SettingsDialog(
             }
 
             dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
-                val key = groqKey.text?.toString()?.trim().orEmpty()
-                if (key.isBlank()) {
-                    groqKey.error = "Isi Groq API key terlebih dahulu"
-                    return@setOnClickListener
-                }
-                Toast.makeText(activity, "Mengambil daftar model Groq…", Toast.LENGTH_SHORT).show()
-                Thread {
-                    val outcome = runCatching { groqCleaner.fetchModels(key) }
-                    Handler(Looper.getMainLooper()).post {
-                        if (activity.isFinishing || activity.isDestroyed) return@post
-                        val models = outcome.getOrNull()
-                        if (models.isNullOrEmpty()) {
-                            Toast.makeText(
-                                activity,
-                                outcome.exceptionOrNull()?.message ?: "Daftar model tidak tersedia",
-                                Toast.LENGTH_LONG
-                            ).show()
-                        } else {
-                            MaterialAlertDialogBuilder(activity)
-                                .setTitle("Pilih model Groq")
-                                .setItems(models.toTypedArray()) { _, index ->
-                                    groqModel.setText(models[index])
-                                }
-                                .setNegativeButton("Batal", null)
-                                .show()
-                        }
-                    }
-                }.start()
+                dialog.dismiss()
+                onPickModel()
             }
         }
         dialog.show()

@@ -16,9 +16,8 @@ internal data class CrawlOptions(
     val historySnapshot: Set<String>,
     val firecrawlApiKey: String = "",
     val useFirecrawl: Boolean = false,
-    val groqApiKey: String = "",
-    val groqModel: String = "openai/gpt-oss-20b",
-    val useGroqCleaning: Boolean = false
+    val localModelPath: String = "",
+    val useLocalModelCleaning: Boolean = false
 )
 
 internal data class CrawlSummary(
@@ -35,7 +34,7 @@ internal class CrawlEngine(
     private val pageLoader: PageLoader,
     private val remoteReader: RemoteReader,
     private val firecrawlReader: FirecrawlReader,
-    private val groqCleaner: GroqCleaner
+    private val localModelCleaner: LocalModelCleaner
 ) {
     private var stopCheck: () -> Boolean = { false }
     private var logSink: (String) -> Unit = {}
@@ -110,15 +109,12 @@ internal class CrawlEngine(
                         log("   post duplikat tidak disimpan (URL kanonis sudah ada).")
                     } else {
                         var finalPost = post
-                        if (options.useGroqCleaning && options.groqApiKey.isNotBlank() &&
-                            post.lines.sumOf { it.length } <= 10_000
-                        ) {
+                        if (options.useLocalModelCleaning && options.localModelPath.isNotBlank()) {
                             try {
-                                val cleaned = groqCleaner.clean(
+                                val cleaned = localModelCleaner.clean(
                                     title = post.title,
                                     text = post.lines.joinToString("\n"),
-                                    apiKey = options.groqApiKey,
-                                    model = options.groqModel
+                                    modelPath = options.localModelPath
                                 )
                                 if (!cleaned.isNullOrBlank()) {
                                     val cleanedLines = cleaned.lineSequence()
@@ -130,16 +126,14 @@ internal class CrawlEngine(
                                     val originalChars = post.lines.sumOf { it.length }
                                     if (cleanedLines.isNotEmpty() && cleanedChars >= minOf(120, originalChars / 3)) {
                                         finalPost = post.copy(lines = cleanedLines)
-                                        log("   Groq merapikan teks artikel.")
+                                        log("   Qwen lokal merapikan teks artikel.")
                                     } else {
-                                        log("   Hasil Groq terlalu pendek; teks hasil scraper dipertahankan.")
+                                        log("   Hasil model lokal terlalu pendek; teks asli dipertahankan.")
                                     }
                                 }
                             } catch (e: Exception) {
-                                log("   Groq tidak tersedia: " + (e.message ?: e.javaClass.simpleName) + ". Teks asli dipertahankan.")
+                                log("   Model lokal gagal: " + (e.message ?: e.javaClass.simpleName) + ". Teks asli dipertahankan.")
                             }
-                        } else if (options.useGroqCleaning && post.lines.sumOf { it.length } > 10_000) {
-                            log("   Teks lebih dari 10.000 karakter; Groq dilewati agar isi artikel tidak terpotong.")
                         }
                         collected++
                         posts.add(finalPost)

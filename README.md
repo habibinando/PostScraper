@@ -68,9 +68,9 @@ Respect the target site's Terms of Service, robots/access policies, copyright, r
 
 ## Optional provider settings
 
-The hamburger menu opens local settings for:
-- **Firecrawl**: optional remote scrape fallback for article pages that local HTML/AMP extraction cannot read. Firecrawl charges credits per page, including on its free tier; add your own API key and enable it explicitly.
-- **Groq**: optional text cleanup after the article has already been extracted. It does not crawl websites or defeat access controls. Choose a model ID returned by the Groq API; model availability and free-tier limits vary by account and can change.
-- **HTTP proxy**: optional manual host and port for trusted proxies. PostScraper does not automatically harvest or rotate unknown public proxies. Such proxies are often unreliable and can observe traffic. WebView rendering may still use Android's normal network route.
+The hamburger menu contains:
+- Local GGUF model: import a GGUF file such as Qwen2.5-3B-Instruct-Abliterated.Q4_K_M.gguf. On-device inference uses llama.cpp and does not require a Groq key or per-request API quota. The import copies the model into app-specific storage; the original is not deleted, so allow around 2 GB or more of extra free space.
+- Firecrawl: optional cloud scrape fallback for article pages that local HTML/AMP extraction cannot read. It requires your API key and may consume service credits.
+- HTTP proxy: optional manual host and port for a trusted proxy. The app does not harvest or rotate public proxies.
 
-Provider API keys are saved in the app's private preferences and sent only to the provider that uses them. Firecrawl receives the target URL when used; Groq receives article text for cleanup. Leave both features disabled to keep extraction local except for the existing optional Jina Reader fallback.
+The local model only cleans extracted text. It does not bypass site protections or make scraping itself offline. If the existing Jina Reader fallback or Firecrawl is enabled, URLs/content may still be sent to those external services. Disable those options to avoid those cloud fallbacks. Local inference uses CPU/RAM/battery and can be slow on mobile devices.
