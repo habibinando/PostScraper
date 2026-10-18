@@ -431,7 +431,7 @@ class MainActivity : AppCompatActivity() {
                     }
 
                     crawledPages++
-                    log("\n[$collected/$maxPosts] halaman $crawledPages: $url")
+                    log("\n[Halaman $crawledPages | $collected/$maxPosts post] $url")
                     updateStatus(collected, postQueue.size + pageQueue.size)
 
                     try {
@@ -535,6 +535,21 @@ class MainActivity : AppCompatActivity() {
         binding.btnClearHistory.isEnabled = enabled
     }
 
+    /** Jalantikus menyajikan halaman artikel biasa sebagai shell JavaScript; versi AMP berisi HTML artikel siap parse. */
+    private fun ampFallbackUrl(url: String): String? {
+        return try {
+            val uri = URI(url)
+            val host = uri.host?.lowercase()?.removePrefix("www.") ?: return null
+            if (host != "jalantikus.com") return null
+            val path = uri.rawPath?.trimEnd('/') ?: return null
+            if (path.isBlank() || path == "/" || path == "/amp" || path.startsWith("/amp/")) return null
+            val scheme = uri.scheme?.lowercase() ?: "https"
+            val authority = uri.rawAuthority ?: return null
+            scheme + "://" + authority + "/amp" + path + "/"
+        } catch (_: Exception) {
+            null
+        }
+    }
     // ---------- Proses satu halaman ----------
 
     private suspend fun processPage(
@@ -564,14 +579,43 @@ class MainActivity : AppCompatActivity() {
                 (!cur.isPost && cur.links.size < 5)
 
         if (needRender) {
-            log("   isi belum terbaca di HTML biasa -> render dengan WebView (JavaScript)...")
-            val html = renderWithWebView(url)
-            if (html != null) {
-                val r = analyze(Jsoup.parse(html, url), url, seedHost, minChars, minimalClean)
-                val rr = PageResult(r.links, r.post, r.isPost, true)
-                if (cur == null || rr.post != null || rr.links.size > cur.links.size) best = rr
-            } else {
-                log("   render WebView gagal / timeout")
+            val ampUrl = ampFallbackUrl(url)
+            if (ampUrl != null) {
+                try {
+                    log("   HTML biasa tidak lengkap -> mencoba halaman AMP...")
+                    val ampHtml = fetchHtml(ampUrl)
+                    // Parse AMP dengan URL asli sebagai base agar link relatif tetap menuju halaman normal.
+                    val ampResult = analyze(Jsoup.parse(ampHtml, url), url, seedHost, minChars, minimalClean)
+                    val ampChars = ampResult.post?.lines?.sumOf { it.length } ?: 0
+                    val current = best
+                    if (ampResult.post != null || current == null || ampResult.links.size > current.links.size) {
+                        best = PageResult(ampResult.links, ampResult.post, ampResult.isPost, false)
+                    }
+                    if (ampResult.post != null) {
+                        log("   AMP berhasil: artikel terbaca (" + ampChars + " karakter).")
+                    } else {
+                        log("   AMP belum menghasilkan artikel sesuai batas: " + ampChars + " karakter.")
+                    }
+                } catch (e: Exception) {
+                    log("   AMP fallback gagal: " + (e.message ?: e.javaClass.simpleName))
+                }
+            }
+
+            val afterAmp = best
+            val needsWebView = afterAmp == null ||
+                    (afterAmp.isPost && afterAmp.post == null) ||
+                    (!afterAmp.isPost && afterAmp.links.size < 5)
+            if (needsWebView) {
+                log("   isi belum terbaca di HTML biasa/AMP -> render dengan WebView (JavaScript)...")
+                val html = renderWithWebView(url)
+                if (html != null) {
+                    val r = analyze(Jsoup.parse(html, url), url, seedHost, minChars, minimalClean)
+                    val rr = PageResult(r.links, r.post, r.isPost, true)
+                    val current = best
+                    if (current == null || rr.post != null || rr.links.size > current.links.size) best = rr
+                } else {
+                    log("   render WebView gagal / timeout")
+                }
             }
         }
         return best ?: PageResult(emptyList(), null, false, false)
@@ -812,6 +856,20 @@ class MainActivity : AppCompatActivity() {
                 if (isNoiseLine(t)) continue
             }
             seen.add(t)
+        }
+
+        // Tabel sering membawa spesifikasi/harga artikel; jadikan setiap baris sebagai satu baris teks.
+        for (table in node.select("table")) {
+            for (row in table.select("tr")) {
+                val cells = row.select("th, td").map { cleanLine(it.text()) }.filter { it.isNotBlank() }
+                if (cells.size < 2) continue
+                val rowText = cells.joinToString(" | ")
+                if (rowText.none { it.isLetter() }) continue
+                if (minimalClean && isNoiseLine(rowText)) continue
+                val linkLen = row.select("a").sumOf { it.text().length }
+                if (minimalClean && rowText.isNotEmpty() && linkLen * 10 > rowText.length * 7) continue
+                seen.add(rowText)
+            }
         }
         var lines: List<String> = seen.toList()
 
