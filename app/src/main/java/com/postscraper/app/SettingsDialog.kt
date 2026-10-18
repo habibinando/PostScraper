@@ -90,7 +90,7 @@ internal class SettingsDialog(
         content.addView(localModelEnabled)
         addCaption("Qwen hanya dijalankan jika HTML, AMP, dan WebView tidak mendapatkan isi artikel yang cukup. Impor menyalin model ke ruang aplikasi; file asli tidak dihapus. Model memakai CPU, RAM, dan baterai.")
 
-        addCaption("PROXY HTTP — hanya gunakan proxy yang kamu percaya")        addCaption("PROXY HTTP — hanya gunakan proxy yang kamu percaya")
+        addCaption("PROXY HTTP — hanya gunakan proxy yang kamu percaya")
         val proxyEnabled = MaterialSwitch(activity).apply {
             text = "Gunakan proxy manual"
             isChecked = current.proxyEnabled
