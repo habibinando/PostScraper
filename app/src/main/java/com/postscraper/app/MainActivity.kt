@@ -66,7 +66,6 @@ class MainActivity : AppCompatActivity() {
     private var stopRequested = false
 
     private val storagePermCode = 101
-    private val remoteReader = RemoteReader()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -248,27 +247,27 @@ class MainActivity : AppCompatActivity() {
 
                 if (posts.isNotEmpty()) {
                     val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
-                    val fileName = "korpus_crawl_\${seedHost.replace(".", "_")}_$timestamp.txt"
+                    val fileName = "korpus_crawl_${seedHost.replace(".", "_")}_$timestamp.txt"
                     val finalText = textExporter.buildFinalText(posts)
                     if (finalText.isBlank()) {
-                        log("\\nHasil teks kosong. Riwayat tidak diubah.")
+                        log("\nHasil teks kosong. Riwayat tidak diubah.")
                     } else {
                         totalChars = finalText.length
-                        totalWords = finalText.split(Regex("\\\\s+")).count { it.isNotBlank() }
+                        totalWords = finalText.split(Regex("\\s+")).count { it.isNotBlank() }
                         try {
                             textExporter.saveToDownload(fileName, finalText)
                             posts.forEach { markVisited(it.url) }
                             savedPath = "Download/$fileName"
                             fileSaved = true
-                            log("\\n>>> DISIMPAN: $savedPath")
+                            log("\n>>> DISIMPAN: $savedPath")
                         } catch (e: Exception) {
-                            log("\\nGAGAL menyimpan file: \${e.message ?: e.javaClass.simpleName}")
-                            log("Post sudah dibaca: \${posts.size}. Riwayat tidak diperbarui.")
+                            log("\nGAGAL menyimpan file: ${e.message ?: e.javaClass.simpleName}")
+                            log("Post sudah dibaca: ${posts.size}. Riwayat tidak diperbarui.")
                         }
                     }
                 }
 
-                log("\\n== SELESAI ==")
+                log("\n== SELESAI ==")
                 log("Post diambil : $collected")
                 log("Halaman crawl: $crawledPages (dirender WebView: $renderedPages)")
                 log("Dilewati     : $skippedVisited (sudah di riwayat)")
@@ -282,8 +281,8 @@ class MainActivity : AppCompatActivity() {
                 log("Crawling dibatalkan.")
                 throw e
             } catch (e: Exception) {
-                log("ERROR proses crawling: \${e.message ?: e.javaClass.simpleName}")
-                log("Hasil parsial: \${posts.size} post terkumpul.")
+                log("ERROR proses crawling: ${e.message ?: e.javaClass.simpleName}")
+                log("Hasil parsial: ${posts.size} post terkumpul.")
             } finally {
                 withContext(NonCancellable + Dispatchers.Main) {
                     crawlRunning = false
