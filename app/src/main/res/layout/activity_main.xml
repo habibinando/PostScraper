@@ -1,0 +1,177 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/bg_light"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="PostScraper Crawler → TXT"
+            android:textSize="22sp"
+            android:textStyle="bold"
+            android:textColor="@color/purple_700" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="Crawl otomatis se-domain: temukan postingan, ambil teks, simpan ke Download. Riwayat tersimpan agar tidak dobel."
+            android:textSize="13sp"
+            android:textColor="#666666" />
+
+        <!-- Seed URL -->
+        <com.google.android.material.textfield.TextInputLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:hint="URL awal (seed) — mis. https://jalansmut.blogspot.com">
+
+            <com.google.android.material.textfield.TextInputEditText
+                android:id="@+id/etSeedUrl"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:inputType="textUri"
+                android:text="https://jalansmut.blogspot.com"
+                android:textSize="14sp" />
+        </com.google.android.material.textfield.TextInputLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:orientation="horizontal">
+
+            <com.google.android.material.textfield.TextInputLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:hint="Maks. post diambil"
+                android:layout_marginEnd="4dp">
+
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@+id/etMaxPosts"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:inputType="number"
+                    android:text="10"
+                    android:textSize="14sp" />
+            </com.google.android.material.textfield.TextInputLayout>
+
+            <com.google.android.material.textfield.TextInputLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:hint="Min. karakter/post"
+                android:layout_marginStart="4dp">
+
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@+id/etMinChars"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:inputType="number"
+                    android:text="400"
+                    android:textSize="14sp" />
+            </com.google.android.material.textfield.TextInputLayout>
+        </LinearLayout>
+
+        <com.google.android.material.materialswitch.MaterialSwitch
+            android:id="@+id/swUseHistory"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="Lewati post yang pernah diambil (riwayat anti-dobel)"
+            android:checked="true" />
+
+        <com.google.android.material.materialswitch.MaterialSwitch
+            android:id="@+id/swClean"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Pembersihan minimal (buang script/style/iklan, rapikan spasi)"
+            android:checked="true" />
+
+        <!-- Buttons -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/btnStart"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_marginEnd="4dp"
+                android:backgroundTint="@color/purple_700"
+                android:textColor="@color/white"
+                android:text="Mulai Crawling" />
+
+            <Button
+                android:id="@+id/btnStop"
+                style="@style/Widget.Material3.Button.OutlinedButton"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_marginStart="4dp"
+                android:layout_marginEnd="4dp"
+                android:text="Stop"
+                android:enabled="false" />
+
+            <Button
+                android:id="@+id/btnClearHistory"
+                style="@style/Widget.Material3.Button.OutlinedButton"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_marginStart="4dp"
+                android:text="Hapus Riwayat" />
+        </LinearLayout>
+
+        <!-- Status -->
+        <TextView
+            android:id="@+id/tvStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="Post terambil: 0 | Antrian: 0 | Riwayat: 0 URL"
+            android:textStyle="bold"
+            android:textSize="14sp" />
+
+        <ProgressBar
+            android:id="@+id/progressBar"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center_horizontal"
+            android:layout_marginTop="8dp"
+            android:visibility="gone" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="Log Proses"
+            android:textStyle="bold"
+            android:textSize="14sp" />
+
+        <TextView
+            android:id="@+id/logTextView"
+            android:layout_width="match_parent"
+            android:layout_height="260dp"
+            android:layout_marginTop="4dp"
+            android:background="@android:color/black"
+            android:padding="10dp"
+            android:textColor="#33FF66"
+            android:textSize="11sp"
+            android:fontFamily="monospace"
+            android:scrollbars="vertical" />
+
+    </LinearLayout>
+</ScrollView>
