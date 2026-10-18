@@ -354,7 +354,7 @@ class MainActivity : AppCompatActivity() {
                         log("\n>>> GAGAL: hasil teks kosong. Riwayat tidak diubah.")
                     } else {
                         totalChars = finalText.length
-                        totalWords = finalText.split(Regex("\\\\s+")).count { it.isNotBlank() }
+                        totalWords = finalText.split(Regex("\\s+")).count { it.isNotBlank() }
                         saveToDownload(fileName, finalText)
                         posts.forEach { markVisited(it.url) }
                         savedPath = "Download/$fileName"
