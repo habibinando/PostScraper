@@ -251,9 +251,10 @@ internal class CrawlEngine(
                     minChars = minChars
                 )
                 if (!stopCheck() && !extracted.isNullOrBlank() && extracted.length >= minChars) {
-                    val links = best?.links ?: doc?.let {
+                    val discoveredLinks = sourceDoc?.let {
                         ArticleExtractor.analyze(it, url, seedHost, minChars, minimalClean).links
                     }.orEmpty()
+                    val links = (best?.links.orEmpty() + discoveredLinks).distinct()
                     val canonical = best?.post?.url
                         ?: ArticleExtractor.normalizeLink(url, url, seedHost)
                         ?: url
@@ -262,7 +263,8 @@ internal class CrawlEngine(
                         post = PostData(canonical, fallbackTitle, extracted.lineSequence()
                             .map { it.trim() }.filter { it.isNotBlank() }.toList()),
                         isPost = true,
-                        rendered = best?.rendered ?: false
+                        rendered = best?.rendered ?: false,
+                        nextPageUrl = best?.nextPageUrl
                     )
                     best = chooseBetter(best, modelPost)
                     log("   Qwen lokal berhasil mengambil isi artikel (\${extracted.length} karakter).")
@@ -434,10 +436,13 @@ internal class CrawlEngine(
                 if (!stopCheck() && !extracted.isNullOrBlank() && extracted.length >= minChars) {
                     val canonical = best?.post?.url ?: ArticleExtractor.normalizeLink(url, url, seedHost) ?: url
                     best = PageResult(
-                        links = best?.links.orEmpty(),
+                        links = (best?.links.orEmpty() + sourceDoc?.let {
+                            ArticleExtractor.analyze(it, url, seedHost, minChars, minimalClean, forcePost = true).links
+                        }.orEmpty()).distinct(),
                         post = PostData(canonical, title, extracted.lineSequence().map { it.trim() }.filter { it.isNotBlank() }.toList()),
                         isPost = true,
-                        rendered = best?.rendered ?: false
+                        rendered = best?.rendered ?: false,
+                        nextPageUrl = best?.nextPageUrl
                     )
                 }
             } catch (_: Exception) { }
