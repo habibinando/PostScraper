@@ -47,10 +47,16 @@ import java.util.Locale
 class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
-    private val pageLoader by lazy(LazyThreadSafetyMode.NONE) { PageLoader(this) { stopRequested } }
+    private val settingsStore by lazy(LazyThreadSafetyMode.NONE) { AppSettingsStore(applicationContext) }
+    private val networkClients by lazy(LazyThreadSafetyMode.NONE) { NetworkClientFactory(settingsStore) }
+    private val pageLoader by lazy(LazyThreadSafetyMode.NONE) { PageLoader(this, { stopRequested }, networkClients) }
     private val textExporter by lazy(LazyThreadSafetyMode.NONE) { TextExporter(this) }
-    private val remoteReader = RemoteReader()
-    private val crawlEngine by lazy(LazyThreadSafetyMode.NONE) { CrawlEngine(pageLoader, remoteReader) }
+    private val remoteReader by lazy(LazyThreadSafetyMode.NONE) { RemoteReader(networkClients) }
+    private val firecrawlReader by lazy(LazyThreadSafetyMode.NONE) { FirecrawlReader(networkClients) }
+    private val groqCleaner by lazy(LazyThreadSafetyMode.NONE) { GroqCleaner(networkClients) }
+    private val crawlEngine by lazy(LazyThreadSafetyMode.NONE) {
+        CrawlEngine(pageLoader, remoteReader, firecrawlReader, groqCleaner)
+    }
 
     // Semua pekerjaan crawl terikat ke lifecycle Activity; tidak membuat scope liar per tombol.
     private val activityJob = SupervisorJob()
@@ -71,6 +77,16 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
+
+        binding.toolbar.setNavigationOnClickListener {
+            if (crawlRunning) {
+                toast("Hentikan crawling sebelum mengubah pengaturan")
+            } else {
+                SettingsDialog(this, settingsStore, groqCleaner).show {
+                    log("Pengaturan tersimpan.")
+                }
+            }
+        }
 
         // Riwayat lama (versi sebelumnya mencatat semua halaman, termasuk yang gagal) dibuang.
         try { File(filesDir, "visited_history.txt").delete() } catch (_: Exception) { }
@@ -203,6 +219,7 @@ class MainActivity : AppCompatActivity() {
         val useHistory = binding.swUseHistory.isChecked
         val minimalClean = binding.swClean.isChecked
         val useRemoteReader = binding.swUseReader.isChecked
+        val appSettings = settingsStore.load()
 
         stopRequested = false
         crawlRunning = true
@@ -231,7 +248,12 @@ class MainActivity : AppCompatActivity() {
                     useHistory = useHistory,
                     minimalClean = minimalClean,
                     useRemoteReader = useRemoteReader,
-                    historySnapshot = visited.toSet()
+                    historySnapshot = visited.toSet(),
+                    firecrawlApiKey = appSettings.firecrawlApiKey,
+                    useFirecrawl = appSettings.useFirecrawl,
+                    groqApiKey = appSettings.groqApiKey,
+                    groqModel = appSettings.groqModel,
+                    useGroqCleaning = appSettings.useGroqCleaning
                 )
                 val result = crawlEngine.crawl(
                     options = options,

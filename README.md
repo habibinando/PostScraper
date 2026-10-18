@@ -64,3 +64,13 @@ The GitHub Actions workflow `Build APK` runs on each push to `main`. Open the la
 ## Responsible use
 
 Respect the target site's Terms of Service, robots/access policies, copyright, rate limits, and content ownership. Do not use PostScraper to bypass login controls or technical access restrictions.
+
+
+## Optional provider settings
+
+The hamburger menu opens local settings for:
+- **Firecrawl**: optional remote scrape fallback for article pages that local HTML/AMP extraction cannot read. Firecrawl charges credits per page, including on its free tier; add your own API key and enable it explicitly.
+- **Groq**: optional text cleanup after the article has already been extracted. It does not crawl websites or defeat access controls. Choose a model ID returned by the Groq API; model availability and free-tier limits vary by account and can change.
+- **HTTP proxy**: optional manual host and port for trusted proxies. PostScraper does not automatically harvest or rotate unknown public proxies. Such proxies are often unreliable and can observe traffic. WebView rendering may still use Android's normal network route.
+
+Provider API keys are saved in the app's private preferences and sent only to the provider that uses them. Firecrawl receives the target URL when used; Groq receives article text for cleanup. Leave both features disabled to keep extraction local except for the existing optional Jina Reader fallback.

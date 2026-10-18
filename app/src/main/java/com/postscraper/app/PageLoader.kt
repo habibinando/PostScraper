@@ -11,11 +11,9 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.Call
-import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONTokener
 import java.io.ByteArrayOutputStream
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.resume
 
@@ -25,18 +23,12 @@ import kotlin.coroutines.resume
  */
 internal class PageLoader(
     private val activity: Activity,
-    private val shouldStop: () -> Boolean
+    private val shouldStop: () -> Boolean,
+    private val networkClients: NetworkClientFactory
 ) {
     private val desktopUa =
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
             "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-
-    private val client = OkHttpClient.Builder()
-        .connectTimeout(20, TimeUnit.SECONDS)
-        .readTimeout(20, TimeUnit.SECONDS)
-        .callTimeout(35, TimeUnit.SECONDS)
-        .followRedirects(true)
-        .build()
 
     private val maxHtmlBytes = 5 * 1024 * 1024
 
@@ -59,7 +51,7 @@ internal class PageLoader(
             .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
             .build()
 
-        val call = client.newCall(request)
+        val call = networkClients.client().newCall(request)
         activeCall = call
         try {
             call.execute().use { response ->
