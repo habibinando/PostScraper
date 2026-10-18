@@ -17,6 +17,17 @@
         android:paddingEnd="18dp"
         android:paddingBottom="28dp">
 
+        <com.google.android.material.appbar.MaterialToolbar
+            android:id="@+id/toolbar"
+            android:layout_width="match_parent"
+            android:layout_height="?attr/actionBarSize"
+            android:layout_marginBottom="8dp"
+            app:contentInsetStartWithNavigation="0dp"
+            app:navigationIcon="@drawable/ic_hamburger"
+            app:navigationContentDescription="Buka pengaturan"
+            app:navigationIconTint="@color/text_primary"
+            app:title="" />
+
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"

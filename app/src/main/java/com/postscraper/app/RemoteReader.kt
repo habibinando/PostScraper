@@ -1,26 +1,17 @@
 package com.postscraper.app
 
 import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
-import java.util.concurrent.TimeUnit
 
 /**
  * Optional cloud fallback for sites that block ordinary HTML extraction.
  * The primary crawler remains local. Only URLs explicitly processed as a fallback
  * are sent to Jina Reader; the UI exposes a switch to disable this behavior.
  */
-internal class RemoteReader {
-    private val client = OkHttpClient.Builder()
-        .connectTimeout(12, TimeUnit.SECONDS)
-        .readTimeout(28, TimeUnit.SECONDS)
-        .callTimeout(32, TimeUnit.SECONDS)
-        .followRedirects(true)
-        .build()
-
+internal class RemoteReader(private val networkClients: NetworkClientFactory) {
     @Volatile
     private var lastRequestAt = 0L
 
@@ -57,7 +48,7 @@ internal class RemoteReader {
 
         lastRequestAt = System.currentTimeMillis()
         return try {
-            client.newCall(request).execute().use { response ->
+            networkClients.client().newCall(request).execute().use { response ->
                 if (!response.isSuccessful) return null
                 val body = response.body ?: return null
                 if (body.contentLength() > 3L * 1024L * 1024L) return null

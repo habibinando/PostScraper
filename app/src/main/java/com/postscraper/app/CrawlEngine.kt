@@ -13,7 +13,12 @@ internal data class CrawlOptions(
     val useHistory: Boolean,
     val minimalClean: Boolean,
     val useRemoteReader: Boolean,
-    val historySnapshot: Set<String>
+    val historySnapshot: Set<String>,
+    val firecrawlApiKey: String = "",
+    val useFirecrawl: Boolean = false,
+    val groqApiKey: String = "",
+    val groqModel: String = "openai/gpt-oss-20b",
+    val useGroqCleaning: Boolean = false
 )
 
 internal data class CrawlSummary(
@@ -28,7 +33,9 @@ internal data class CrawlSummary(
 /** Crawl orchestration and pagination-aware article fetching, independent from UI state. */
 internal class CrawlEngine(
     private val pageLoader: PageLoader,
-    private val remoteReader: RemoteReader
+    private val remoteReader: RemoteReader,
+    private val firecrawlReader: FirecrawlReader,
+    private val groqCleaner: GroqCleaner
 ) {
     private var stopCheck: () -> Boolean = { false }
     private var logSink: (String) -> Unit = {}
@@ -85,7 +92,8 @@ internal class CrawlEngine(
 
             try {
                 val result = processPage(
-                    url, options.seedHost, options.minChars, options.minimalClean, options.useRemoteReader
+                    url, options.seedHost, options.minChars, options.minimalClean,
+                    options.useRemoteReader, options.useFirecrawl, options.firecrawlApiKey
                 )
                 if (stopCheck()) break
                 if (result.rendered) renderedPages++
@@ -101,10 +109,38 @@ internal class CrawlEngine(
                     if (duplicate) {
                         log("   post duplikat tidak disimpan (URL kanonis sudah ada).")
                     } else {
+                        var finalPost = post
+                        if (options.useGroqCleaning && options.groqApiKey.isNotBlank()) {
+                            try {
+                                val cleaned = groqCleaner.clean(
+                                    title = post.title,
+                                    text = post.lines.joinToString("\n"),
+                                    apiKey = options.groqApiKey,
+                                    model = options.groqModel
+                                )
+                                if (!cleaned.isNullOrBlank()) {
+                                    val cleanedLines = cleaned.lineSequence()
+                                        .map { it.trim() }
+                                        .filter { it.isNotBlank() }
+                                        .distinct()
+                                        .toList()
+                                    val cleanedChars = cleanedLines.sumOf { it.length }
+                                    val originalChars = post.lines.sumOf { it.length }
+                                    if (cleanedLines.isNotEmpty() && cleanedChars >= minOf(120, originalChars / 3)) {
+                                        finalPost = post.copy(lines = cleanedLines)
+                                        log("   Groq merapikan teks artikel.")
+                                    } else {
+                                        log("   Hasil Groq terlalu pendek; teks hasil scraper dipertahankan.")
+                                    }
+                                }
+                            } catch (e: Exception) {
+                                log("   Groq tidak tersedia: " + (e.message ?: e.javaClass.simpleName) + ". Teks asli dipertahankan.")
+                            }
+                        }
                         collected++
-                        posts.add(post)
-                        val chars = post.lines.sumOf { it.length }
-                        log("   >>> POST DIAMBIL #$collected: ${post.title.take(60)} ($chars karakter)")
+                        posts.add(finalPost)
+                        val chars = finalPost.lines.sumOf { it.length }
+                        log("   >>> POST DIAMBIL #$collected: ${finalPost.title.take(60)} ($chars karakter)")
                     }
                 } else if (result.isPost) {
                     log("   (teks artikel tidak terbaca atau totalnya masih di bawah ${options.minChars} karakter)")
@@ -144,7 +180,9 @@ internal class CrawlEngine(
         seedHost: String,
         minChars: Int,
         minimalClean: Boolean,
-        allowRemoteReader: Boolean
+        allowRemoteReader: Boolean,
+        useFirecrawl: Boolean,
+        firecrawlApiKey: String
     ): PageResult {
         var notFound = false
         val doc: Document? = try {
@@ -180,6 +218,32 @@ internal class CrawlEngine(
                     if (ampResult.post != null) log("   AMP terbaca: ${ampResult.post.lines.sumOf { it.length }} karakter.")
                 } catch (e: Exception) {
                     log("   AMP tidak tersedia: ${e.message ?: e.javaClass.simpleName}")
+                }
+            }
+
+            val beforeFirecrawl = best
+            val beforeFirecrawlChars = beforeFirecrawl?.post?.lines?.sumOf { it.length } ?: 0
+            val needsFirecrawl = beforeFirecrawl == null ||
+                ((beforeFirecrawl.isPost || isArticleUrl) &&
+                    (beforeFirecrawl.post == null || beforeFirecrawlChars < minChars))
+            if (useFirecrawl && firecrawlApiKey.isNotBlank() && needsFirecrawl &&
+                (isArticleUrl || beforeFirecrawl?.isPost == true)
+            ) {
+                try {
+                    log("   mencoba Firecrawl sebagai fallback cloud...")
+                    val markdown = firecrawlReader.fetchMarkdown(url, firecrawlApiKey)
+                    if (markdown != null) {
+                        val cloudResult = ArticleExtractor.fromReaderMarkdown(
+                            markdown, url, seedHost, minChars, minimalClean
+                        )
+                        best = chooseBetter(best, cloudResult)
+                        log("   Firecrawl mengembalikan teks (" +
+                            (cloudResult.post?.lines?.sumOf { it.length } ?: 0) + " karakter).")
+                    } else {
+                        log("   Firecrawl tidak mengembalikan Markdown yang bisa dipakai.")
+                    }
+                } catch (e: Exception) {
+                    log("   Firecrawl gagal: " + (e.message ?: e.javaClass.simpleName))
                 }
             }
 
@@ -231,7 +295,9 @@ internal class CrawlEngine(
             seedHost = seedHost,
             minChars = minChars,
             minimalClean = minimalClean,
-            allowRemoteReader = allowRemoteReader
+            allowRemoteReader = allowRemoteReader,
+            useFirecrawl = useFirecrawl,
+            firecrawlApiKey = firecrawlApiKey
         )
     }
 
@@ -257,7 +323,9 @@ internal class CrawlEngine(
         seedHost: String,
         minChars: Int,
         minimalClean: Boolean,
-        allowRemoteReader: Boolean
+        allowRemoteReader: Boolean,
+        useFirecrawl: Boolean,
+        firecrawlApiKey: String
     ): PageResult {
         val root = first.post ?: return first
         val mergedLines = root.lines.toMutableList()
@@ -272,7 +340,9 @@ internal class CrawlEngine(
 
         while (nextUrl != null && pageCount < 12 && !stopCheck() && seenPages.add(nextUrl)) {
             log("   menggabungkan halaman artikel ${pageCount + 1}: $nextUrl")
-            val part = fetchArticlePart(nextUrl, seedHost, minChars, minimalClean, allowRemoteReader)
+            val part = fetchArticlePart(
+                nextUrl, seedHost, minChars, minimalClean, allowRemoteReader, useFirecrawl, firecrawlApiKey
+            )
             val fragment = part?.post
             if (fragment == null || !ArticleExtractor.sameArticle(root, fragment)) {
                 log("   batas halaman artikel terdeteksi; berhenti menggabungkan.")
@@ -310,7 +380,9 @@ internal class CrawlEngine(
         seedHost: String,
         minChars: Int,
         minimalClean: Boolean,
-        allowRemoteReader: Boolean
+        allowRemoteReader: Boolean,
+        useFirecrawl: Boolean,
+        firecrawlApiKey: String
     ): PageResult? {
         var best: PageResult? = try {
             ArticleExtractor.analyze(
@@ -329,6 +401,22 @@ internal class CrawlEngine(
                     )
                     best = chooseBetter(best, amp)
                 } catch (_: Exception) { }
+            }
+        }
+        val preCloudChars = best?.post?.lines?.sumOf { it.length } ?: 0
+        if (useFirecrawl && firecrawlApiKey.isNotBlank() &&
+            (best == null || best.post == null || preCloudChars < 100)
+        ) {
+            try {
+                val markdown = firecrawlReader.fetchMarkdown(url, firecrawlApiKey)
+                if (markdown != null) {
+                    best = chooseBetter(
+                        best,
+                        ArticleExtractor.fromReaderMarkdown(markdown, url, seedHost, minChars, minimalClean)
+                    )
+                }
+            } catch (e: Exception) {
+                log("   Firecrawl gagal pada halaman lanjutan: " + (e.message ?: e.javaClass.simpleName))
             }
         }
         val bestChars = best?.post?.lines?.sumOf { it.length } ?: 0
