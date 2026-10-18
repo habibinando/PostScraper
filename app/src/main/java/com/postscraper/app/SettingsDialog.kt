@@ -82,13 +82,13 @@ internal class SettingsDialog(
         content.addView(modelInfo)
 
         val localModelEnabled = MaterialSwitch(activity).apply {
-            text = "Gunakan Qwen lokal untuk membersihkan teks"
+            text = "Gunakan Qwen sebagai fallback ekstraksi artikel"
             isChecked = current.useLocalModelCleaning
             textSize = 14f
             setPadding(2, 8, 2, 4)
         }
         content.addView(localModelEnabled)
-        addCaption("Impor akan menyalin file model ke ruang aplikasi (sekitar 2 GB untuk Q4_K_M). File asli tidak dihapus. Gunakan HP dengan ruang kosong memadai; pemrosesan memakai CPU, RAM, dan baterai.")
+        addCaption("Qwen hanya dijalankan jika HTML, AMP, dan WebView tidak mendapatkan isi artikel yang cukup. Impor menyalin model ke ruang aplikasi; file asli tidak dihapus. Model memakai CPU, RAM, dan baterai.")
 
         addCaption("PROXY HTTP — hanya gunakan proxy yang kamu percaya")        addCaption("PROXY HTTP — hanya gunakan proxy yang kamu percaya")
         val proxyEnabled = MaterialSwitch(activity).apply {

@@ -45,7 +45,7 @@ Output file format: `korpus_crawl_<domain>_<timestamp>.txt`.
 - `CrawlEngine.kt` — work queues, crawl loop, duplicate handling, fallback order, and page merging.
 - `ArticleExtractor.kt` — URL normalization, pagination detection, article content extraction, cleanup, and Markdown parsing.
 - `PageLoader.kt` — HTTP fetching, request cancellation, and WebView JavaScript rendering.
-- `RemoteReader.kt` — optional external Reader fallback.
+- `LocalModelCleaner.kt` — optional on-device GGUF extraction fallback used only when normal extraction cannot recover enough article text.
 - `TextExporter.kt` — final text assembly and Android Downloads export.
 
 ## Build APK
