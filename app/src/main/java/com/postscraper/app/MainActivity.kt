@@ -727,7 +727,7 @@ class MainActivity : AppCompatActivity() {
                                     v.evaluateJavascript("document.documentElement.outerHTML") { raw ->
                                         finish(decodeJsString(raw))
                                     }
-                                }, 5000)
+                                }, 30000)
                             }
 
                             override fun onReceivedError(
