@@ -218,7 +218,11 @@ internal class CrawlEngine(
                     ).copy(rendered = true)
                     val previousChars = best?.post?.lines?.sumOf { it.length } ?: 0
                     val renderedChars = rendered.post?.lines?.sumOf { it.length } ?: 0
-                    if (renderedChars > previousChars || fallbackHtml == null) {
+                    val renderedBodyChars = renderedDoc.body()?.text()?.length ?: 0
+                    val previousBodyChars = fallbackHtml?.let {
+                        Jsoup.parse(it, url).body()?.text()?.length ?: 0
+                    } ?: 0
+                    if (renderedChars > previousChars || fallbackHtml == null || renderedBodyChars > previousBodyChars) {
                         fallbackHtml = renderedHtml
                         sourceDoc = renderedDoc
                     }
@@ -405,7 +409,11 @@ internal class CrawlEngine(
                     renderedDoc, url, seedHost, minChars, minimalClean, forcePost = true
                 ).copy(rendered = true)
                 val renderedChars = rendered.post?.lines?.sumOf { it.length } ?: 0
-                if (renderedChars > bestChars || fallbackHtml == null) {
+                val renderedBodyChars = renderedDoc.body()?.text()?.length ?: 0
+                val previousBodyChars = fallbackHtml?.let {
+                    Jsoup.parse(it, url).body()?.text()?.length ?: 0
+                } ?: 0
+                if (renderedChars > bestChars || fallbackHtml == null || renderedBodyChars > previousBodyChars) {
                     fallbackHtml = html
                     sourceDoc = renderedDoc
                 }
