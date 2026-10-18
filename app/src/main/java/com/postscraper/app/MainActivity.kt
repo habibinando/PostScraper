@@ -39,7 +39,6 @@ import okhttp3.Request
 import org.json.JSONTokener
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
-import org.jsoup.nodes.Element
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileWriter
@@ -47,7 +46,6 @@ import java.io.OutputStreamWriter
 import java.net.URI
 import java.text.SimpleDateFormat
 import java.util.Date
-import java.util.IdentityHashMap
 import java.util.Locale
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -105,75 +103,7 @@ class MainActivity : AppCompatActivity() {
     /** URL halaman maksimum yang dibaca untuk menghindari OOM karena HTML sangat besar. */
     private val maxHtmlBytes = 5 * 1024 * 1024
     private val storagePermCode = 101
-
-    private class PostData(val url: String, val title: String, val lines: List<String>)
-
-    private class PageResult(
-        val links: List<String>,
-        val post: PostData?,
-        val isPost: Boolean,
-        val rendered: Boolean
-    )
-
-    /** Parameter query yang diabaikan saat normalisasi (tracking/mobile). */
-    private val junkParams = setOf(
-        "m", "showcomment", "utm_source", "utm_medium", "utm_campaign",
-        "utm_term", "utm_content", "fbclid", "gclid", "referrer"
-    )
-
-    /** Ekstensi file yang bukan halaman (tidak di-crawl). */
-    private val assetExt = setOf(
-        "jpg", "jpeg", "png", "gif", "webp", "svg", "ico", "pdf", "zip", "rar",
-        "apk", "exe", "mp3", "mp4", "avi", "mkv", "css", "js", "json", "xml",
-        "txt", "doc", "docx", "xls", "xlsx", "ppt", "pptx"
-    )
-
-    /** Segmen path yang menandakan halaman index/non-post. */
-    private val skipSegments = setOf(
-        "search", "label", "labels", "tag", "tags", "category", "categories",
-        "kategori", "page", "author", "authors", "feed", "archive", "archives",
-        "topik", "topic", "topics", "user", "users", "login", "register",
-        "contact", "kontak", "about", "tentang", "privacy", "privacy-policy",
-        "terms", "sitemap", "amp", "wp-admin", "wp-content", "wp-json"
-    )
-
-    /** Elemen yang pasti bukan isi artikel. */
-    private val hardNoise = "script, style, noscript, iframe, ins, nav, header, footer, aside, " +
-            "svg, canvas, select, input, textarea, template, dialog, button, " +
-            "[role=navigation], [role=banner], [role=contentinfo], [role=complementary], " +
-            "[aria-hidden=true], [hidden]"
-
-    /** Elemen sampah yang bisa ada DI DALAM kontainer artikel. */
-    private val softNoise = ".sidebar, #sidebar, .related, #related, .comments, #comments, " +
-            ".comments-area, .comment-list, .comment-respond, .share, .sharing, .social, " +
-            ".breadcrumb, .breadcrumbs, .newsletter, .popup, .modal, .advert, .ads, .ad, " +
-            ".adsbygoogle, .banner, .baca-juga, .read-more, .readmore, .author-box, " +
-            ".post-meta, .entry-meta, .post-tags, .tags, .tag-list, " +
-            "[class*=related-post], [class*=related_post], [class*=relatedpost], " +
-            "[class*=share-], [class*=social-], [class*=advert], [class*=newsletter], " +
-            "[class*=popup], [class*=breadcrumb]"
-
-    private val noiseExact = setOf(
-        "komentar", "share", "tweet", "iklan", "advertisement", "sponsored",
-        "related", "tags", "tag", "bagikan", "subscribe"
-    )
-
-    private val noisePrefixes = listOf(
-        "baca juga", "baca lainnya", "baca selengkapnya", "simak juga", "lihat juga",
-        "lihat lainnya", "artikel terkait", "berita terkait", "postingan terkait",
-        "related post", "related article", "related:", "read more", "read also",
-        "see also", "follow us", "ikuti kami", "bagikan", "share this", "share on",
-        "tinggalkan komentar", "leave a comment", "berlangganan", "scroll to continue",
-        "sumber:", "source:", "tags:", "tag:", "kategori:", "category:", "penulis:", "editor:"
-    )
-
-    private val urlRegex = Regex("(https?://|www\\.)\\S+", RegexOption.IGNORE_CASE)
-    private val emailRegex = Regex("\\S+@\\S+\\.\\S+")
-    private val sepRegex = Regex("[=_~*#\\-]{3,}")
-    private val emptyBracketRegex = Regex("[(\\[]\\s*[)\\]]")
-    private val invisibleRegex = Regex("[\\u200B-\\u200D\\uFEFF]")
-    private val wsRegex = Regex("\\s+")
-    private val datedPathRegex = Regex("/\\d{4}/\\d{2}/")
+    private val remoteReader = RemoteReader()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -263,71 +193,6 @@ class MainActivity : AppCompatActivity() {
 
     // ---------- Normalisasi & klasifikasi URL ----------
 
-    private fun seedHostOf(seedUrl: String): String? {
-        return try {
-            val fixed = if (!seedUrl.startsWith("http://", true) &&
-                !seedUrl.startsWith("https://", true)) "https://$seedUrl" else seedUrl
-            URI(fixed).host?.lowercase()?.removePrefix("www.")
-        } catch (e: Exception) {
-            null
-        }
-    }
-
-    private fun normalizeLink(href: String, baseUri: String, seedHost: String): String? {
-        return try {
-            if (href.isBlank()) return null
-            val abs = if (href.startsWith("http://", true) || href.startsWith("https://", true)) {
-                href
-            } else {
-                URI(baseUri).resolve(href).toString()
-            }
-            val uri = URI(abs)
-            val scheme = uri.scheme?.lowercase() ?: return null
-            if (scheme != "http" && scheme != "https") return null
-            val host = uri.host?.lowercase()?.removePrefix("www.") ?: return null
-            if (host != seedHost) return null
-
-            var path = uri.path ?: "/"
-            if (path.isEmpty()) path = "/"
-            if (path.length > 1 && path.endsWith("/")) path = path.dropLast(1)
-
-            val lastSeg = path.substringAfterLast('/')
-            val ext = if (lastSeg.contains('.')) lastSeg.substringAfterLast('.').lowercase() else ""
-            if (ext in assetExt) return null
-
-            val cleanQuery = uri.rawQuery
-                ?.split("&")
-                ?.filter { p -> p.substringBefore("=").lowercase() !in junkParams }
-                ?.joinToString("&")
-
-            "$scheme://$host$path${if (!cleanQuery.isNullOrEmpty()) "?$cleanQuery" else ""}"
-        } catch (e: Exception) {
-            null
-        }
-    }
-
-    private fun isPostUrl(url: String): Boolean {
-        return try {
-            val u = URI(url)
-            val path = u.path ?: "/"
-            val segs = path.split("/").filter { it.isNotEmpty() }
-            if (segs.isEmpty()) return false
-            if (segs.any { it.lowercase() in skipSegments }) return false
-            val last = segs.last().lowercase()
-            val dated = datedPathRegex.containsMatchIn(path) && last.any { it.isLetter() }
-            if (u.rawQuery != null && !dated) return false
-            dated || last.endsWith(".html") || last.endsWith(".htm") ||
-                    last.count { it == '-' } >= 2
-        } catch (e: Exception) {
-            false
-        }
-    }
-
-    private fun looksLikePost(url: String, doc: Document): Boolean {
-        val ogType = doc.selectFirst("meta[property=og:type]")?.attr("content").orEmpty()
-        return ogType.equals("article", true) || isPostUrl(url)
-    }
-
     // ---------- Inti Crawler ----------
 
     private fun startCrawl() {
@@ -348,7 +213,7 @@ class MainActivity : AppCompatActivity() {
 
         val parsedSeed = try { URI(seed).normalize() } catch (_: Exception) { null }
         val scheme = parsedSeed?.scheme?.lowercase(Locale.ROOT)
-        val seedHost = seedHostOf(seed)
+        val seedHost = ArticleExtractor.seedHostOf(seed)
         if (parsedSeed == null || scheme == null ||
             (scheme != "http" && scheme != "https") ||
             seedHost.isNullOrBlank() || parsedSeed.userInfo != null
@@ -377,6 +242,7 @@ class MainActivity : AppCompatActivity() {
 
         val useHistory = binding.swUseHistory.isChecked
         val minimalClean = binding.swClean.isChecked
+        val useRemoteReader = binding.swUseReader.isChecked
 
         stopRequested = false
         crawlRunning = true
@@ -405,16 +271,16 @@ class MainActivity : AppCompatActivity() {
 
                 fun enqueue(link: String): Boolean {
                     if (link.isBlank() || !queued.add(link)) return false
-                    if (isPostUrl(link)) postQueue.add(link) else pageQueue.add(link)
+                    if (ArticleExtractor.isPostUrl(link)) postQueue.add(link) else pageQueue.add(link)
                     return true
                 }
 
-                enqueue(normalizeLink(seed, seed, seedHost) ?: seed)
+                enqueue(ArticleExtractor.normalizeLink(seed, seed, seedHost) ?: seed)
 
                 val maxPages = maxOf(60, maxPosts * 8)
                 log("== MULAI CRAWL ==")
                 log("Seed : $seed")
-                log("Target: $maxPosts post | min. $minChars karakter | riwayat: ${if (useHistory) "ON" else "OFF"}")
+                log("Target: $maxPosts post | min. $minChars karakter | riwayat: ${if (useHistory) "ON" else "OFF"} | Jina Reader: ${if (useRemoteReader) "ON" else "OFF"}")
 
                 while ((postQueue.isNotEmpty() || pageQueue.isNotEmpty()) &&
                     collected < maxPosts && !stopRequested
@@ -435,7 +301,7 @@ class MainActivity : AppCompatActivity() {
                     updateStatus(collected, postQueue.size + pageQueue.size)
 
                     try {
-                        val res = processPage(url, seedHost, minChars, minimalClean)
+                        val res = processPage(url, seedHost, minChars, minimalClean, useRemoteReader)
                         if (stopRequested) break
                         if (res.rendered) renderedPages++
 
@@ -447,6 +313,11 @@ class MainActivity : AppCompatActivity() {
 
                         val post = res.post
                         if (post != null && post.lines.isNotEmpty()) {
+                            val duplicateCanonical = posts.any { it.url == post.url } ||
+                                (useHistory && post.url in visited)
+                            if (duplicateCanonical) {
+                                log("   post duplikat tidak disimpan (URL kanonis sudah ada).")
+                            } else {
                             collected++
                             posts.add(post)
                             try {
@@ -456,6 +327,7 @@ class MainActivity : AppCompatActivity() {
                             }
                             val chars = post.lines.sumOf { it.length }
                             log("   >>> POST DIAMBIL #$collected: ${post.title.take(60)} ($chars karakter)")
+                            }
                         } else if (res.isPost) {
                             log("   (halaman post, tapi teks tidak terbaca atau di bawah $minChars karakter — dilewati)")
                         } else {
@@ -532,116 +404,216 @@ class MainActivity : AppCompatActivity() {
         binding.etMinChars.isEnabled = enabled
         binding.swUseHistory.isEnabled = enabled
         binding.swClean.isEnabled = enabled
+        binding.swUseReader.isEnabled = enabled
         binding.btnClearHistory.isEnabled = enabled
     }
 
     /** Jalantikus menyajikan halaman artikel biasa sebagai shell JavaScript; versi AMP berisi HTML artikel siap parse. */
-    private fun ampFallbackUrl(url: String): String? {
-        return try {
-            val uri = URI(url)
-            val host = uri.host?.lowercase()?.removePrefix("www.") ?: return null
-            if (host != "jalantikus.com") return null
-            val path = uri.rawPath?.trimEnd('/') ?: return null
-            if (path.isBlank() || path == "/" || path == "/amp" || path.startsWith("/amp/")) return null
-            val scheme = uri.scheme?.lowercase() ?: "https"
-            val authority = uri.rawAuthority ?: return null
-            scheme + "://" + authority + "/amp" + path + "/"
-        } catch (_: Exception) {
-            null
-        }
-    }
     // ---------- Proses satu halaman ----------
 
     private suspend fun processPage(
         url: String,
         seedHost: String,
         minChars: Int,
-        minimalClean: Boolean
+        minimalClean: Boolean,
+        allowRemoteReader: Boolean
     ): PageResult {
         var notFound = false
         val doc: Document? = try {
             Jsoup.parse(fetchHtml(url), url)
         } catch (e: Exception) {
-            if (stopRequested) return PageResult(emptyList(), null, false, false)
+            if (stopRequested) return PageResult(emptyList(), null, false)
             val msg = e.message ?: e.javaClass.simpleName
             if (msg.startsWith("HTTP 404") || msg.startsWith("HTTP 410")) notFound = true
-            log("   fetch biasa gagal: $msg")
+            log("   fetch HTML biasa gagal: $msg")
             null
         }
-        if (notFound) return PageResult(emptyList(), null, false, false)
+        if (notFound) return PageResult(emptyList(), null, false)
 
-        var best: PageResult? =
-            if (doc != null) analyze(doc, url, seedHost, minChars, minimalClean) else null
+        var best: PageResult? = doc?.let {
+            ArticleExtractor.analyze(it, url, seedHost, minChars, minimalClean)
+        }
+        val isArticleUrl = ArticleExtractor.isPostUrl(url) || best?.isPost == true
+        val bestChars = best?.post?.lines?.sumOf { it.length } ?: 0
+        val needFallback = best == null ||
+            (best.isPost && (best.post == null || bestChars < minChars)) ||
+            (!best.isPost && best.links.size < 5)
 
-        val cur = best
-        val needRender = cur == null ||
-                (cur.isPost && cur.post == null) ||
-                (!cur.isPost && cur.links.size < 5)
-
-        if (needRender) {
-            val ampUrl = ampFallbackUrl(url)
-            if (ampUrl != null) {
+        if (needFallback) {
+            val ampUrl = ArticleExtractor.ampFallbackUrl(url)
+            if (ampUrl != null && (best?.isPost == true || isArticleUrl)) {
                 try {
-                    log("   HTML biasa tidak lengkap -> mencoba halaman AMP...")
+                    log("   mencoba versi AMP...")
                     val ampHtml = fetchHtml(ampUrl)
-                    // Parse AMP dengan URL asli sebagai base agar link relatif tetap menuju halaman normal.
-                    val ampResult = analyze(Jsoup.parse(ampHtml, url), url, seedHost, minChars, minimalClean)
-                    val ampChars = ampResult.post?.lines?.sumOf { it.length } ?: 0
-                    val current = best
-                    if (ampResult.post != null || current == null || ampResult.links.size > current.links.size) {
-                        best = PageResult(ampResult.links, ampResult.post, ampResult.isPost, false)
-                    }
-                    if (ampResult.post != null) {
-                        log("   AMP berhasil: artikel terbaca (" + ampChars + " karakter).")
-                    } else {
-                        log("   AMP belum menghasilkan artikel sesuai batas: " + ampChars + " karakter.")
-                    }
+                    val ampResult = ArticleExtractor.analyze(
+                        Jsoup.parse(ampHtml, url), url, seedHost, minChars, minimalClean, forcePost = true
+                    )
+                    best = chooseBetter(best, ampResult)
+                    if (ampResult.post != null) log("   AMP terbaca: \${ampResult.post.lines.sumOf { it.length }} karakter.")
                 } catch (e: Exception) {
-                    log("   AMP fallback gagal: " + (e.message ?: e.javaClass.simpleName))
+                    log("   AMP tidak tersedia: \${e.message ?: e.javaClass.simpleName}")
                 }
             }
 
-            val afterAmp = best
-            val needsWebView = afterAmp == null ||
-                    (afterAmp.isPost && afterAmp.post == null) ||
-                    (!afterAmp.isPost && afterAmp.links.size < 5)
+            val current = best
+            val currentChars = current?.post?.lines?.sumOf { it.length } ?: 0
+            val needsReader = current == null ||
+                ((current.isPost || isArticleUrl) && (current.post == null || currentChars < minChars))
+            if (allowRemoteReader && needsReader && (isArticleUrl || current?.isPost == true)) {
+                log("   mencoba Jina Reader sebagai fallback jarak jauh...")
+                val markdown = remoteReader.fetchMarkdown(url)
+                if (markdown != null) {
+                    val remote = ArticleExtractor.fromReaderMarkdown(
+                        markdown, url, seedHost, minChars, minimalClean
+                    )
+                    best = chooseBetter(best, remote)
+                    val chars = remote.post?.lines?.sumOf { it.length } ?: 0
+                    log(if (chars >= minChars) "   Jina Reader berhasil membaca artikel ($chars karakter)."
+                        else "   Jina Reader hanya menemukan $chars karakter.")
+                } else {
+                    log("   Jina Reader gagal, dibatasi layanan, atau tidak tersedia.")
+                }
+            }
+
+            val afterRemote = best
+            val afterRemoteChars = afterRemote?.post?.lines?.sumOf { it.length } ?: 0
+            val needsWebView = afterRemote == null ||
+                ((afterRemote.isPost || isArticleUrl) && (afterRemote.post == null || afterRemoteChars < minChars)) ||
+                (!afterRemote.isPost && afterRemote.links.size < 5)
             if (needsWebView) {
-                log("   isi belum terbaca di HTML biasa/AMP -> render dengan WebView (JavaScript)...")
+                log("   mencoba render WebView (JavaScript)...")
                 val html = renderWithWebView(url)
                 if (html != null) {
-                    val r = analyze(Jsoup.parse(html, url), url, seedHost, minChars, minimalClean)
-                    val rr = PageResult(r.links, r.post, r.isPost, true)
-                    val current = best
-                    if (current == null || rr.post != null || rr.links.size > current.links.size) best = rr
+                    val rendered = ArticleExtractor.analyze(
+                        Jsoup.parse(html, url), url, seedHost, minChars, minimalClean,
+                        forcePost = isArticleUrl
+                    ).copy(rendered = true)
+                    best = chooseBetter(best, rendered)
                 } else {
                     log("   render WebView gagal / timeout")
                 }
             }
         }
-        return best ?: PageResult(emptyList(), null, false, false)
+
+        val selected = best ?: return PageResult(emptyList(), null, isArticleUrl)
+        if (!selected.isPost && !isArticleUrl) return selected
+        return combineArticlePages(
+            first = selected,
+            originalUrl = url,
+            seedHost = seedHost,
+            minChars = minChars,
+            minimalClean = minimalClean,
+            allowRemoteReader = allowRemoteReader
+        )
     }
 
-    private fun analyze(
-        doc: Document,
+    private fun chooseBetter(current: PageResult?, candidate: PageResult): PageResult {
+        if (current == null) return candidate
+        val currentChars = current.post?.lines?.sumOf { it.length } ?: 0
+        val candidateChars = candidate.post?.lines?.sumOf { it.length } ?: 0
+        val chooseCandidate = candidateChars > currentChars ||
+            (current.post == null && candidate.post != null) ||
+            (current.links.isEmpty() && candidate.links.isNotEmpty())
+        val chosen = if (chooseCandidate) candidate else current
+        return chosen.copy(
+            links = (current.links + candidate.links).distinct(),
+            isPost = current.isPost || candidate.isPost,
+            rendered = current.rendered || candidate.rendered,
+            nextPageUrl = chosen.nextPageUrl ?: current.nextPageUrl ?: candidate.nextPageUrl
+        )
+    }
+
+    private suspend fun combineArticlePages(
+        first: PageResult,
+        originalUrl: String,
+        seedHost: String,
+        minChars: Int,
+        minimalClean: Boolean,
+        allowRemoteReader: Boolean
+    ): PageResult {
+        val root = first.post ?: return first
+        val mergedLines = root.lines.toMutableList()
+        val mergedLinks = LinkedHashSet(first.links)
+        val seenPages = HashSet<String>().apply {
+            add(originalUrl)
+            add(root.url)
+        }
+        var nextUrl = first.nextPageUrl
+        var pageCount = 1
+        var usedWebView = first.rendered
+
+        while (nextUrl != null && pageCount < 12 && !stopRequested && seenPages.add(nextUrl)) {
+            log("   menggabungkan halaman artikel \${pageCount + 1}: $nextUrl")
+            val part = fetchArticlePart(nextUrl, seedHost, minChars, minimalClean, allowRemoteReader)
+            val fragment = part?.post
+            if (fragment == null || !ArticleExtractor.sameArticle(root, fragment)) {
+                log("   batas halaman artikel terdeteksi; berhenti menggabungkan.")
+                break
+            }
+            for (line in fragment.lines) {
+                if (line.isNotBlank() && mergedLines.lastOrNull() != line) mergedLines.add(line)
+            }
+            mergedLinks.addAll(part.links)
+            usedWebView = usedWebView || part.rendered
+            nextUrl = part.nextPageUrl
+            pageCount++
+        }
+
+        if (pageCount > 1) {
+            log("   artikel berseri digabung menjadi satu post ($pageCount halaman, \${mergedLines.sumOf { it.length }} karakter).")
+        }
+        val totalChars = mergedLines.sumOf { it.length }
+        val combinedPost = if (totalChars >= minChars) PostData(root.url, root.title, mergedLines)
+            else {
+                log("   total artikel masih di bawah batas $minChars karakter setelah penggabungan.")
+                null
+            }
+        return PageResult(
+            links = mergedLinks.toList(),
+            post = combinedPost,
+            isPost = true,
+            rendered = usedWebView,
+            nextPageUrl = null
+        )
+    }
+
+    private suspend fun fetchArticlePart(
         url: String,
         seedHost: String,
         minChars: Int,
-        minimalClean: Boolean
-    ): PageResult {
-        val links = ArrayList<String>()
-        for (href in doc.select("a[href]").eachAttr("abs:href")) {
-            val norm = normalizeLink(href, url, seedHost)
-            if (norm != null) links.add(norm)
+        minimalClean: Boolean,
+        allowRemoteReader: Boolean
+    ): PageResult? {
+        var best: PageResult? = try {
+            ArticleExtractor.analyze(
+                Jsoup.parse(fetchHtml(url), url), url, seedHost, minChars, minimalClean, forcePost = true
+            )
+        } catch (_: Exception) {
+            null
         }
-
-        val isPost = looksLikePost(url, doc)
-        var post: PostData? = null
-        if (isPost) {
-            val title = pickTitle(doc, url)
-            val lines = extractLines(doc, minimalClean, minChars)
-            if (lines.sumOf { it.length } >= minChars) post = PostData(url, title, lines)
+        val chars = best?.post?.lines?.sumOf { it.length } ?: 0
+        if (best == null || best.post == null || chars < 100) {
+            val ampUrl = ArticleExtractor.ampFallbackUrl(url)
+            if (ampUrl != null) {
+                try {
+                    val amp = ArticleExtractor.analyze(
+                        Jsoup.parse(fetchHtml(ampUrl), url), url, seedHost, minChars, minimalClean, forcePost = true
+                    )
+                    best = chooseBetter(best, amp)
+                } catch (_: Exception) { }
+            }
         }
-        return PageResult(links, post, isPost, false)
+        val bestChars = best?.post?.lines?.sumOf { it.length } ?: 0
+        if (allowRemoteReader && (best == null || best.post == null || bestChars < 100)) {
+            val markdown = remoteReader.fetchMarkdown(url)
+            if (markdown != null) {
+                best = chooseBetter(
+                    best,
+                    ArticleExtractor.fromReaderMarkdown(markdown, url, seedHost, minChars, minimalClean)
+                )
+            }
+        }
+        return best
     }
 
     // ---------- Fetch ----------
@@ -720,14 +692,13 @@ class MainActivity : AppCompatActivity() {
                         wv.webViewClient = object : WebViewClient() {
                             override fun onPageFinished(view: WebView?, pageUrl: String?) {
                                 val v = view ?: return
-                                // PERBAIKAN: Tambah waktu tunggu dari 3000ms menjadi 5000ms (5 detik)
-                                // agar situs berbasis JS (React/Next.js) sempat merender teks artikel.
+                                // Beri kesempatan JavaScript selesai merender tanpa menyentuh batas timeout 30 detik.
                                 v.postDelayed({
                                     if (finished.get()) return@postDelayed
                                     v.evaluateJavascript("document.documentElement.outerHTML") { raw ->
                                         finish(decodeJsString(raw))
                                     }
-                                }, 30000)
+                                }, 3500)
                             }
 
                             override fun onReceivedError(
@@ -770,154 +741,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     // ---------- Ekstraksi isi artikel ----------
-
-    private fun pickTitle(doc: Document, url: String): String {
-        val h1 = doc.select("h1").map { it.text().trim() }
-            .filter { it.length >= 8 }
-            .maxByOrNull { it.length }
-            .orEmpty()
-        val og = doc.selectFirst("meta[property=og:title]")?.attr("content").orEmpty()
-        val t = doc.title()
-        val raw = listOf(h1, og, t).firstOrNull { it.isNotBlank() }
-            ?: url.trimEnd('/').substringAfterLast('/')
-        return cleanLine(raw)
-    }
-
-    // PERBAIKAN: Beri bobot pada div, tapi setengah dari p agar <p> tetap diprioritaskan
-    private fun paragraphChars(el: Element): Int {
-        val pChars = el.select("p").sumOf { it.text().length }
-        val divChars = el.select("div").sumOf { it.text().length }
-        return pChars + (divChars / 2)
-    }
-
-    // PERBAIKAN: Turunkan threshold dan sertakan div dalam scoring fallback
-    private fun pickContentNode(doc: Document): Element? {
-        val selectors = listOf(
-            "[itemprop=articleBody]", "article", ".post-body", ".entry-content",
-            ".article-content", ".article-body", ".post-content", ".td-post-content",
-            ".single-content", "main"
-        )
-        for (sel in selectors) {
-            var bestEl: Element? = null
-            var bestScore = 0
-            for (el in doc.select(sel)) {
-                val score = paragraphChars(el)
-                if (score > bestScore) {
-                    bestEl = el
-                    bestScore = score
-                }
-            }
-            if (bestEl != null && bestScore >= 150) return bestEl
-        }
-
-        // Fallback: elemen yang membawahi paling banyak teks paragraf ATAU div berisi teks
-        val scores = IdentityHashMap<Element, Int>()
-        for (p in doc.select("p, div")) {
-            val len = p.text().length
-            if (len < 30) continue
-            val parent = p.parent() ?: continue
-            scores[parent] = (scores[parent] ?: 0) + len
-            val grand = parent.parent()
-            if (grand != null) scores[grand] = (scores[grand] ?: 0) + len / 2
-        }
-        return scores.maxByOrNull { it.value }?.key
-    }
-
-    // PERBAIKAN: Logika fallback yang benar (menggantikan replace("\\n", "\n") yang tidak bekerja di JSoup)
-    private fun extractLines(doc: Document, minimalClean: Boolean, minChars: Int): List<String> {
-        if (minimalClean) {
-            doc.select(hardNoise).remove()
-            doc.select("form").filter { it.text().length < 500 }.forEach { it.remove() }
-        }
-
-        val node = pickContentNode(doc) ?: doc.body() ?: return emptyList()
-
-        if (minimalClean) {
-            node.select(softNoise).filter { it !== node }.forEach { it.remove() }
-        }
-
-        val blockSel = "p, h2, h3, h4, h5, h6, li, blockquote, pre"
-        val seen = LinkedHashSet<String>()
-        for (el in node.select(blockSel)) {
-            if (el.select(blockSel).isNotEmpty()) continue
-            val raw = el.text()
-            val t = cleanLine(raw)
-            if (t.isEmpty() || t.none { it.isLetter() }) continue
-
-            val tag = el.tagName()
-            val heading = tag.matches(Regex("h[1-6]"))
-            if (minimalClean) {
-                if (!heading) {
-                    // PERBAIKAN: Longgarkan dari < 4 kata menjadi < 2 kata
-                    if (t.split(' ').size < 2) continue
-                    val linkLen = el.select("a").sumOf { it.text().length }
-                    if (raw.isNotEmpty() && linkLen * 10 > raw.length * 6) continue
-                }
-                if (isNoiseLine(t)) continue
-            }
-            seen.add(t)
-        }
-
-        // Tabel sering membawa spesifikasi/harga artikel; jadikan setiap baris sebagai satu baris teks.
-        for (table in node.select("table")) {
-            for (row in table.select("tr")) {
-                val cells = row.select("th, td").map { cleanLine(it.text()) }.filter { it.isNotBlank() }
-                if (cells.size < 2) continue
-                val rowText = cells.joinToString(" | ")
-                if (rowText.none { it.isLetter() }) continue
-                if (minimalClean && isNoiseLine(rowText)) continue
-                val linkLen = row.select("a").sumOf { it.text().length }
-                if (minimalClean && rowText.isNotEmpty() && linkLen * 10 > rowText.length * 7) continue
-                seen.add(rowText)
-            }
-        }
-        var lines: List<String> = seen.toList()
-
-        // Fallback untuk isi yang tidak memakai <p> (mis. blog lama: teks + <br> atau hanya <div>)
-        if (lines.sumOf { it.length } < minChars) {
-            val alt = LinkedHashSet<String>()
-            for (el in node.select("p, div, h2, h3, h4, h5, h6, li, blockquote, pre")) {
-                // Hindari duplikasi: jika elemen div ini punya anak blok, skip parent-nya
-                if (el.select("p, h2, h3, h4, h5, h6, li, blockquote, pre").isNotEmpty() && el.tagName() == "div") {
-                    continue
-                }
-                
-                val t = cleanLine(el.text())
-                if (t.none { it.isLetter() }) continue
-                
-                val isHeading = el.tagName().matches(Regex("h[2-6]"))
-                if (minimalClean && !isHeading && t.split(' ').size < 2) continue
-                if (minimalClean && !isHeading && isNoiseLine(t)) continue
-                
-                alt.add(t)
-            }
-            if (alt.sumOf { it.length } > lines.sumOf { it.length }) {
-                lines = alt.toList()
-            }
-        }
-        return lines
-    }
-
-    private fun isNoiseLine(t: String): Boolean {
-        val l = t.lowercase()
-        if (l in noiseExact) return true
-        if (l.contains("©") || l.contains("all rights reserved") ||
-            l.contains("all right reserved") || l.contains("hak cipta")
-        ) return true
-        return noisePrefixes.any { l.startsWith(it) }
-    }
-
-    private fun cleanLine(s: String): String {
-        return s.replace('\u00A0', ' ')
-            .replace(invisibleRegex, "")
-            .replace("[email protected]", "")
-            .replace(urlRegex, "")
-            .replace(emailRegex, "")
-            .replace(sepRegex, " ")
-            .replace(emptyBracketRegex, "")
-            .replace(wsRegex, " ")
-            .trim()
-    }
 
     private fun buildFinalText(posts: List<PostData>): String {
         val sb = StringBuilder()
