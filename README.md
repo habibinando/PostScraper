@@ -28,7 +28,7 @@ Nama file: `korpus_crawl_<domain>_<timestamp>.txt`.
 
 Konfigurasi Android proyek:
 - **minSdk 26** — Android 8.0 ke atas.
-- **compileSdk / targetSdk 37** — Android API 37.
+- **compileSdk API 37.0 / targetSdk 37** — Android API 37.
 - **Android Gradle Plugin 9.2.1** dengan Gradle 9.4.1.
 - **JDK 25** untuk menjalankan build; bytecode aplikasi tetap ditargetkan ke Java 17 untuk kompatibilitas Android.
 
@@ -36,7 +36,7 @@ Konfigurasi Android proyek:
 Setiap push ke `main` menjalankan workflow **Build APK**. Unduh APK di tab **Actions** → run terbaru → **Artifacts** → `PostScraper-debug-apk`.
 
 ### Build lokal
-Buka folder proyek dengan Android Studio yang mendukung Android Gradle Plugin 9.2.1. Pastikan platform SDK Android 37 dan Build Tools 36.0.0 tersedia, lalu jalankan tugas `assembleDebug`.
+Buka folder proyek dengan Android Studio yang mendukung Android Gradle Plugin 9.2.1. Pastikan Android SDK Platform 37.0 dan Build Tools 36.0.0 tersedia. Pada Gradle, `compileSdk` menggunakan `release(37) { minorApiLevel = 0 }` agar cocok dengan paket SDK `android-37.0`, lalu jalankan tugas `assembleDebug`.
 
 ## Catatan Penting
 - Hormati **Terms of Service** situs target.
