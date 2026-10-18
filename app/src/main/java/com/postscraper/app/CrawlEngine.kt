@@ -172,7 +172,7 @@ internal class CrawlEngine(
         val isArticleUrl = ArticleExtractor.isPostUrl(url) || best?.isPost == true
         val initialChars = best?.post?.lines?.sumOf { it.length } ?: 0
         val needFallback = best == null ||
-            (best.isPost && (best.post == null || initialChars < minChars)) ||
+            (isArticleUrl && (best.post == null || initialChars < minChars)) ||
             (!best.isPost && best.links.size < 5)
 
         if (needFallback && !stopCheck()) {
