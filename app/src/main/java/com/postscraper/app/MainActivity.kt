@@ -188,7 +188,6 @@ class MainActivity : AppCompatActivity() {
         binding.logTextView.movementMethod = ScrollingMovementMethod()
 
         // Android 15+ mewajibkan edge-to-edge untuk target SDK modern.
-        // Tambahkan inset agar kontrol tidak tertutup status bar / navigation bar.
         if (Build.VERSION.SDK_INT >= 35) {
             WindowCompat.setDecorFitsSystemWindows(window, false)
             val left = binding.root.paddingLeft
@@ -219,7 +218,6 @@ class MainActivity : AppCompatActivity() {
         binding.btnStop.setOnClickListener {
             if (!crawlRunning) return@setOnClickListener
             stopRequested = true
-            // Hentikan request aktif, supaya Stop tidak harus menunggu timeout penuh.
             activeCall?.cancel()
             cancelWebViewRender?.invoke()
             log(">> Stop diminta. Hasil yang sudah terkumpul tetap akan disimpan.")
@@ -265,7 +263,6 @@ class MainActivity : AppCompatActivity() {
 
     // ---------- Normalisasi & klasifikasi URL ----------
 
-    /** Host dari seed (tanpa www, lowercase). */
     private fun seedHostOf(seedUrl: String): String? {
         return try {
             val fixed = if (!seedUrl.startsWith("http://", true) &&
@@ -276,10 +273,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * Normalisasi link jadi bentuk kanonik. Return null jika bukan http/https,
-     * beda domain dengan seed, atau berupa file (gambar, pdf, apk, dst).
-     */
     private fun normalizeLink(href: String, baseUri: String, seedHost: String): String? {
         return try {
             if (href.isBlank()) return null
@@ -313,11 +306,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * Heuristik URL: apakah ini kemungkinan halaman POST (artikel)?
-     * Post = slug panjang (min. 2 tanda '-'), berakhiran .html, atau path bertanggal.
-     * Halaman kategori seperti /tips atau /gadgets bukan post.
-     */
     private fun isPostUrl(url: String): Boolean {
         return try {
             val u = URI(url)
@@ -413,7 +401,6 @@ class MainActivity : AppCompatActivity() {
             var fileSaved = false
 
             try {
-                // File kerja hanya di-reset saat run baru benar-benar dimulai.
                 workFile.writeText("")
 
                 fun enqueue(link: String): Boolean {
@@ -497,7 +484,6 @@ class MainActivity : AppCompatActivity() {
                         totalChars = finalText.length
                         totalWords = finalText.split(wsRegex).count { it.isNotBlank() }
                         saveToDownload(fileName, finalText)
-                        // Riwayat hanya ditandai setelah berkas output berhasil disimpan.
                         posts.forEach { markVisited(it.url) }
                         savedPath = "Download/$fileName"
                         fileSaved = true
@@ -551,10 +537,6 @@ class MainActivity : AppCompatActivity() {
 
     // ---------- Proses satu halaman ----------
 
-    /**
-     * Fetch biasa dulu (cepat). Jika halaman post kosong / halaman daftar tanpa
-     * link (ciri situs yang dirender JavaScript), render ulang pakai WebView.
-     */
     private suspend fun processPage(
         url: String,
         seedHost: String,
@@ -595,7 +577,6 @@ class MainActivity : AppCompatActivity() {
         return best ?: PageResult(emptyList(), null, false, false)
     }
 
-    /** Kumpulkan link, lalu (jika post) ambil judul + isi artikel bersih. */
     private fun analyze(
         doc: Document,
         url: String,
@@ -603,14 +584,12 @@ class MainActivity : AppCompatActivity() {
         minChars: Int,
         minimalClean: Boolean
     ): PageResult {
-        // 1) Link se-domain (diambil sebelum DOM dibersihkan).
         val links = ArrayList<String>()
         for (href in doc.select("a[href]").eachAttr("abs:href")) {
             val norm = normalizeLink(href, url, seedHost)
             if (norm != null) links.add(norm)
         }
 
-        // 2) Post? ambil judul + isi.
         val isPost = looksLikePost(url, doc)
         var post: PostData? = null
         if (isPost) {
@@ -667,10 +646,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * Render halaman dengan WebView (menjalankan JavaScript) lalu ambil HTML hasil
-     * render. Dipakai untuk situs yang isinya baru muncul setelah JS jalan.
-     */
     @SuppressLint("SetJavaScriptEnabled")
     private suspend fun renderWithWebView(url: String): String? {
         return try {
@@ -690,7 +665,6 @@ class MainActivity : AppCompatActivity() {
                             if (cont.isActive) cont.resume(result)
                         }
 
-                        // Callback ini dipanggil tombol Stop di main thread.
                         cancelWebViewRender = { finish(null) }
 
                         wv.settings.javaScriptEnabled = true
@@ -702,13 +676,14 @@ class MainActivity : AppCompatActivity() {
                         wv.webViewClient = object : WebViewClient() {
                             override fun onPageFinished(view: WebView?, pageUrl: String?) {
                                 val v = view ?: return
-                                // Beri waktu JavaScript membangun isi halaman.
+                                // PERBAIKAN: Tambah waktu tunggu dari 3000ms menjadi 5000ms (5 detik)
+                                // agar situs berbasis JS (React/Next.js) sempat merender teks artikel.
                                 v.postDelayed({
                                     if (finished.get()) return@postDelayed
                                     v.evaluateJavascript("document.documentElement.outerHTML") { raw ->
                                         finish(decodeJsString(raw))
                                     }
-                                }, 3000)
+                                }, 5000)
                             }
 
                             override fun onReceivedError(
@@ -741,7 +716,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /** Hasil evaluateJavascript berupa string JSON ("..." dengan escape) -> string asli. */
     private fun decodeJsString(raw: String?): String? {
         if (raw == null || raw == "null" || raw.length < 2) return null
         return try {
@@ -753,7 +727,6 @@ class MainActivity : AppCompatActivity() {
 
     // ---------- Ekstraksi isi artikel ----------
 
-    /** Judul post: h1 terpanjang (>= 8 huruf), lalu og:title, lalu <title>. */
     private fun pickTitle(doc: Document, url: String): String {
         val h1 = doc.select("h1").map { it.text().trim() }
             .filter { it.length >= 8 }
@@ -766,10 +739,14 @@ class MainActivity : AppCompatActivity() {
         return cleanLine(raw)
     }
 
-    /** Jumlah karakter paragraf (<p>) di dalam elemen — ukuran "seberapa mirip isi artikel". */
-    private fun paragraphChars(el: Element): Int = el.select("p").sumOf { it.text().length }
+    // PERBAIKAN: Beri bobot pada div, tapi setengah dari p agar <p> tetap diprioritaskan
+    private fun paragraphChars(el: Element): Int {
+        val pChars = el.select("p").sumOf { it.text().length }
+        val divChars = el.select("div").sumOf { it.text().length }
+        return pChars + (divChars / 2)
+    }
 
-    /** Cari kontainer isi artikel: selector umum dulu, lalu kepadatan paragraf. */
+    // PERBAIKAN: Turunkan threshold dan sertakan div dalam scoring fallback
     private fun pickContentNode(doc: Document): Element? {
         val selectors = listOf(
             "[itemprop=articleBody]", "article", ".post-body", ".entry-content",
@@ -786,14 +763,14 @@ class MainActivity : AppCompatActivity() {
                     bestScore = score
                 }
             }
-            if (bestEl != null && bestScore >= 200) return bestEl
+            if (bestEl != null && bestScore >= 150) return bestEl
         }
 
-        // Fallback: elemen yang membawahi paling banyak teks paragraf.
+        // Fallback: elemen yang membawahi paling banyak teks paragraf ATAU div berisi teks
         val scores = IdentityHashMap<Element, Int>()
-        for (p in doc.select("p")) {
+        for (p in doc.select("p, div")) {
             val len = p.text().length
-            if (len < 40) continue
+            if (len < 30) continue
             val parent = p.parent() ?: continue
             scores[parent] = (scores[parent] ?: 0) + len
             val grand = parent.parent()
@@ -802,14 +779,10 @@ class MainActivity : AppCompatActivity() {
         return scores.maxByOrNull { it.value }?.key
     }
 
-    /**
-     * Ambil baris teks bersih dari isi artikel. Tanpa menu, footer, iklan,
-     * komentar, link, dan garis pemisah.
-     */
+    // PERBAIKAN: Logika fallback yang benar (menggantikan replace("\\n", "\n") yang tidak bekerja di JSoup)
     private fun extractLines(doc: Document, minimalClean: Boolean, minChars: Int): List<String> {
         if (minimalClean) {
             doc.select(hardNoise).remove()
-            // <form> sering membungkus seluruh halaman (ASP.NET) — hanya buang yang kecil.
             doc.select("form").filter { it.text().length < 500 }.forEach { it.remove() }
         }
 
@@ -822,17 +795,17 @@ class MainActivity : AppCompatActivity() {
         val blockSel = "p, h2, h3, h4, h5, h6, li, blockquote, pre"
         val seen = LinkedHashSet<String>()
         for (el in node.select(blockSel)) {
-            if (el.select(blockSel).isNotEmpty()) continue   // proses blok terdalam agar teks parent tidak terduplikasi
+            if (el.select(blockSel).isNotEmpty()) continue
             val raw = el.text()
             val t = cleanLine(raw)
             if (t.isEmpty() || t.none { it.isLetter() }) continue
 
             val tag = el.tagName()
-            val heading = tag.length == 2 && tag[0] == 'h'
+            val heading = tag.matches(Regex("h[1-6]"))
             if (minimalClean) {
                 if (!heading) {
-                    if (t.split(' ').size < 4) continue
-                    // Baris yang hampir seluruhnya link = menu / daftar artikel terkait.
+                    // PERBAIKAN: Longgarkan dari < 4 kata menjadi < 2 kata
+                    if (t.split(' ').size < 2) continue
                     val linkLen = el.select("a").sumOf { it.text().length }
                     if (raw.isNotEmpty() && linkLen * 10 > raw.length * 6) continue
                 }
@@ -842,19 +815,27 @@ class MainActivity : AppCompatActivity() {
         }
         var lines: List<String> = seen.toList()
 
-        // Fallback untuk isi yang tidak memakai <p> (mis. blog lama: teks + <br>).
+        // Fallback untuk isi yang tidak memakai <p> (mis. blog lama: teks + <br> atau hanya <div>)
         if (lines.sumOf { it.length } < minChars) {
-            node.select("br").after("\\n")
-            node.select("div").after("\\n")
-            val flat = node.text().replace("\\n", "\n")
             val alt = LinkedHashSet<String>()
-            for (part in flat.split("\n")) {
-                val t = cleanLine(part)
+            for (el in node.select("p, div, h2, h3, h4, h5, h6, li, blockquote, pre")) {
+                // Hindari duplikasi: jika elemen div ini punya anak blok, skip parent-nya
+                if (el.select("p, h2, h3, h4, h5, h6, li, blockquote, pre").isNotEmpty() && el.tagName() == "div") {
+                    continue
+                }
+                
+                val t = cleanLine(el.text())
                 if (t.none { it.isLetter() }) continue
-                if (minimalClean && (t.split(' ').size < 4 || isNoiseLine(t))) continue
+                
+                val isHeading = el.tagName().matches(Regex("h[2-6]"))
+                if (minimalClean && !isHeading && t.split(' ').size < 2) continue
+                if (minimalClean && !isHeading && isNoiseLine(t)) continue
+                
                 alt.add(t)
             }
-            if (alt.sumOf { it.length } > lines.sumOf { it.length }) lines = alt.toList()
+            if (alt.sumOf { it.length } > lines.sumOf { it.length }) {
+                lines = alt.toList()
+            }
         }
         return lines
     }
@@ -868,7 +849,6 @@ class MainActivity : AppCompatActivity() {
         return noisePrefixes.any { l.startsWith(it) }
     }
 
-    /** Buang link, email, garis pemisah (=====, -----), karakter tak terlihat, rapikan spasi. */
     private fun cleanLine(s: String): String {
         return s.replace('\u00A0', ' ')
             .replace(invisibleRegex, "")
@@ -881,17 +861,7 @@ class MainActivity : AppCompatActivity() {
             .trim()
     }
 
-    /**
-     * Gabungkan semua post jadi satu teks bersih:
-     *   judul
-     *   paragraf
-     *   paragraf
-     *   (baris kosong)
-     * Baris yang muncul di banyak post (boilerplate) dibuang.
-     */
     private fun buildFinalText(posts: List<PostData>): String {
-        // Jangan menghapus kalimat hanya karena muncul di banyak artikel:
-        // hal itu bisa membuang isi penting dan menghasilkan file kosong.
         val sb = StringBuilder()
         for (post in posts) {
             val title = post.title.trim()
