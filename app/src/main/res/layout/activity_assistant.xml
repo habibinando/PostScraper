@@ -59,14 +59,6 @@
                         android:textColor="@color/text_secondary"
                         android:textSize="12sp" />
 
-                    <ProgressBar
-                        android:id="@+id/progressChat"
-                        style="?android:attr/progressBarStyleSmall"
-                        android:layout_width="22dp"
-                        android:layout_height="22dp"
-                        android:layout_marginStart="10dp"
-                        android:indeterminate="true"
-                        android:visibility="gone" />
                 </LinearLayout>
 
                 <FrameLayout
