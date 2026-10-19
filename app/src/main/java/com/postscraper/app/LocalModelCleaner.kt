@@ -72,18 +72,27 @@ internal class LocalModelCleaner(
         prompt: String,
         systemPrompt: String,
         modelPath: String,
-        maxTokens: Int = 850
+        maxTokens: Int = 128,
+        onPhase: suspend (String) -> Unit = {}
     ): String = mutex.withLock {
         val file = File(modelPath)
         if (!file.isFile || file.length() < 100L * 1024L * 1024L) {
             throw IllegalStateException("File model GGUF tidak ada atau tidak lengkap")
         }
+
+        val existingIsReady = loadedModel?.isLoaded == true && loadedPath == file.absolutePath
+        if (!existingIsReady) onPhase("Memuat model lokal (pertama kali bisa lebih lama)…")
         val model = getOrLoadModel(file.absolutePath)
+        onPhase("Model siap; menghasilkan jawaban…")
+
+        // The free llama-android API returns only after native generation finishes
+        // and has no token-stream or interrupt API. Keep answers bounded so a model
+        // that does not emit EOS cannot occupy the UI for hundreds of tokens.
         Llama.complete(
             model = model,
             prompt = prompt,
             systemPrompt = systemPrompt,
-            maxTokens = maxTokens.coerceIn(64, 1600)
+            maxTokens = maxTokens.coerceIn(64, 768)
         ).text.trim()
     }
 
