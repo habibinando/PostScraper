@@ -14,6 +14,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.postscraper.app.databinding.ActivityMainBinding
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -61,6 +62,8 @@ class MainActivity : AppCompatActivity() {
     private val crawlerScope = CoroutineScope(activityJob + Dispatchers.IO)
     private var activeCrawlJob: Job? = null
     private var crawlRunning = false
+    private var uniqueWordsOnly = false
+    private var requestedUniqueWordCount: Long? = null
 
     /** URL artikel yang sudah berhasil disimpan; dipersist setelah file output sukses. */
     private val visited = HashSet<String>()
@@ -89,6 +92,18 @@ class MainActivity : AppCompatActivity() {
 
         intent.getStringExtra("seed_url")?.takeIf { it.isNotBlank() }?.let {
             binding.etSeedUrl.setText(it)
+        }
+        uniqueWordsOnly = intent.getBooleanExtra("unique_words_only", false)
+        requestedUniqueWordCount = if (intent.hasExtra("requested_unique_word_count")) {
+            intent.getLongExtra("requested_unique_word_count", 0L).takeIf { it > 0L }
+        } else null
+        val autoStartScrape = intent.getBooleanExtra("auto_start_scrape", false)
+        if (autoStartScrape) {
+            // Confirm the potentially long and data-intensive operation before requests begin.
+            binding.etMaxPosts.setText("1000")
+            binding.etMinChars.setText("400")
+            binding.swUseHistory.isChecked = true
+            binding.swClean.isChecked = true
         }
 
         // Riwayat lama (versi sebelumnya mencatat semua halaman, termasuk yang gagal) dibuang.
@@ -152,6 +167,37 @@ class MainActivity : AppCompatActivity() {
         }
 
         log("Siap. Seed: ${binding.etSeedUrl.text} | Riwayat: ${visited.size} post | fallback: HTML → AMP → WebView → Qwen lokal")
+        if (autoStartScrape) {
+            binding.root.post { showAutoScrapeConfirmation() }
+        }
+    }
+
+    private fun showAutoScrapeConfirmation() {
+        if (isFinishing || isDestroyed || crawlRunning) return
+        val modeText = if (uniqueWordsOnly) {
+            "Hasil: kata unik saja, satu kata per baris, huruf kecil, tanpa judul artikel."
+        } else {
+            "Hasil: isi artikel dalam satu file TXT."
+        }
+        val targetText = requestedUniqueWordCount?.let {
+            "\nTarget yang diminta: " + String.format(Locale("id", "ID"), "%,d", it) +
+                " kata unik. Jumlah aktual tidak bisa dijamin."
+        }.orEmpty()
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Konfirmasi pengambilan data")
+            .setMessage(
+                "Sumber: ${binding.etSeedUrl.text}\n" +
+                    "Batas aplikasi: maksimal 1.000 artikel untuk satu proses.\n" +
+                    modeText + targetText + "\n\n" +
+                    "Proses bisa menggunakan banyak kuota, waktu, dan baterai. Hanya halaman pada domain sumber yang akan dijelajahi."
+            )
+            .setNegativeButton("Batal") { _, _ ->
+                log("Permintaan scraping dari chat dibatalkan sebelum jaringan diakses.")
+            }
+            .setPositiveButton("Mulai") { _, _ ->
+                startCrawl()
+            }
+            .show()
     }
 
     override fun onDestroy() {
@@ -280,13 +326,33 @@ class MainActivity : AppCompatActivity() {
 
                 if (posts.isNotEmpty()) {
                     val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
-                    val fileName = "korpus_crawl_${seedHost.replace(".", "_")}_$timestamp.txt"
-                    val finalText = textExporter.buildFinalText(posts)
+                    val safeHost = seedHost.replace(".", "_")
+                    val uniqueWords = if (uniqueWordsOnly) textExporter.buildUniqueWords(posts) else emptyList()
+                    val fileName = if (uniqueWordsOnly) {
+                        "kata_unik_${safeHost}_$timestamp.txt"
+                    } else {
+                        "korpus_crawl_${safeHost}_$timestamp.txt"
+                    }
+                    val finalText = if (uniqueWordsOnly) {
+                        uniqueWords.joinToString(separator = "\n", postfix = "\n")
+                    } else {
+                        textExporter.buildFinalText(posts)
+                    }
                     if (finalText.isBlank()) {
                         log("\nHasil teks kosong. Riwayat tidak diubah.")
                     } else {
                         totalChars = finalText.length
-                        totalWords = finalText.split(Regex("\\s+")).count { it.isNotBlank() }
+                        totalWords = if (uniqueWordsOnly) uniqueWords.size else {
+                            finalText.split(Regex("\\s+")).count { it.isNotBlank() }
+                        }
+                        if (uniqueWordsOnly) {
+                            log("Kamus unik yang ditemukan: $totalWords kata berbeda.")
+                            requestedUniqueWordCount?.let { requested ->
+                                if (totalWords.toLong() < requested) {
+                                    log("Target $requested kata unik tidak tercapai pada batas 1.000 artikel; tidak akan mengarang kata.")
+                                }
+                            }
+                        }
                         try {
                             textExporter.saveToDownload(fileName, finalText)
                             posts.forEach { markVisited(it.url) }
