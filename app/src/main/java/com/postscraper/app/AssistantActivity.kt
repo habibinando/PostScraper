@@ -13,6 +13,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
 import android.widget.LinearLayout
+import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
@@ -61,6 +62,8 @@ class AssistantActivity : AppCompatActivity() {
     @Volatile private var generationPhase = "Menyiapkan model lokal…"
     private var generationStartedAt = 0L
     private var generationTickerJob: Job? = null
+    private var generationRow: LinearLayout? = null
+    private var generationLabel: TextView? = null
     private var attachedFileName: String? = null
     private var attachedFileText: String? = null
     private var attachedFileWasTruncated = false
@@ -390,7 +393,7 @@ class AssistantActivity : AppCompatActivity() {
             } finally {
                 generationTickerJob?.cancel()
                 generationTickerJob = null
-                binding.progressChat.visibility = View.GONE
+                clearGenerationIndicator()
                 isGenerating = false
                 if (!isFinishing && !isDestroyed) {
                     binding.btnSendChat.isEnabled = true
@@ -429,10 +432,56 @@ class AssistantActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * Put the activity indicator directly after the latest user message, like a
+     * chat typing bubble. The model-status bar above the conversation stays static.
+     */
     private fun startGenerationIndicator() {
+        clearGenerationIndicator()
         generationStartedAt = SystemClock.elapsedRealtime()
         generationPhase = "Memuat model lokal…"
-        binding.progressChat.visibility = View.VISIBLE
+
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.START or Gravity.CENTER_VERTICAL
+            setPadding(dp(14), dp(10), dp(14), dp(10))
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = dp(18).toFloat()
+                setColor(Color.parseColor("#FFFFFF"))
+                setStroke(dp(1), Color.parseColor("#E0E5F0"))
+            }
+        }
+        val spinner = ProgressBar(this).apply {
+            isIndeterminate = true
+            val size = dp(18)
+            layoutParams = LinearLayout.LayoutParams(size, size).apply {
+                marginEnd = dp(10)
+            }
+        }
+        val label = TextView(this).apply {
+            text = "Memuat model lokal… · 00:00"
+            textSize = 14f
+            setTextColor(Color.parseColor("#5F687A"))
+            maxLines = 2
+        }
+        row.addView(spinner)
+        row.addView(label, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+
+        val wrapper = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.START
+            setPadding(0, dp(4), dp(48), dp(4))
+            addView(row, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { width = ViewGroup.LayoutParams.MATCH_PARENT })
+        }
+        binding.chatMessages.addView(wrapper)
+        generationRow = wrapper
+        generationLabel = label
+        binding.chatScroll.post { binding.chatScroll.fullScroll(View.FOCUS_DOWN) }
+
         generationTickerJob?.cancel()
         generationTickerJob = lifecycleScope.launch {
             while (isActive && isGenerating) {
@@ -444,10 +493,20 @@ class AssistantActivity : AppCompatActivity() {
                     seconds / 60L,
                     seconds % 60L
                 )
-                binding.tvChatStatus.text = "$generationPhase · $timeLabel"
+                generationLabel?.text = "$generationPhase · $timeLabel"
+                binding.chatScroll.post { binding.chatScroll.fullScroll(View.FOCUS_DOWN) }
                 delay(1000L)
             }
         }
+    }
+
+    private fun clearGenerationIndicator() {
+        generationTickerJob?.cancel()
+        generationTickerJob = null
+        val row = generationRow
+        (row?.parent as? android.view.ViewGroup)?.removeView(row)
+        generationRow = null
+        generationLabel = null
     }
 
     private fun handleBuiltInCommand(message: String): Boolean {
