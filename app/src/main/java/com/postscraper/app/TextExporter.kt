@@ -28,6 +28,28 @@ internal class TextExporter(private val activity: Activity) {
         return out.toString()
     }
 
+    /**
+     * Build a one-word-per-line vocabulary from article bodies only.
+     * Titles are intentionally excluded for "unique Indonesian words" exports.
+     * Insertion order follows the site traversal so the result is reproducible.
+     */
+    fun buildUniqueWords(posts: List<PostData>): List<String> {
+        val seen = LinkedHashSet<String>()
+        for (post in posts) {
+            for (line in post.lines) {
+                for (match in wordPattern.findAll(line)) {
+                    val word = match.value.lowercase(java.util.Locale.ROOT)
+                    if (word.isNotBlank()) seen.add(word)
+                }
+            }
+        }
+        return seen.toList()
+    }
+
+    private companion object {
+        val wordPattern = Regex("[\\p{L}\\p{M}]+")
+    }
+
     fun saveToDownload(fileName: String, content: String) {
         if (content.isBlank()) throw Exception("Konten kosong; tidak ada file yang dibuat.")
 
