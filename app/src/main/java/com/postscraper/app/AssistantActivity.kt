@@ -48,6 +48,8 @@ class AssistantActivity : AppCompatActivity() {
     private data class Turn(val role: String, val text: String)
     private val chatHistory = mutableListOf<Turn>()
     private var isGenerating = false
+    private var importInProgress = false
+    private var importProgressLabel = "Menyiapkan impor model…"
     private var attachedFileName: String? = null
     private var attachedFileText: String? = null
     private var attachedFileWasTruncated = false
@@ -85,8 +87,15 @@ class AssistantActivity : AppCompatActivity() {
             }
         }
 
-        binding.toolbar.setNavigationOnClickListener {
-            binding.drawerRoot.openDrawer(GravityCompat.START)
+        binding.toolbar.apply {
+            visibility = View.VISIBLE
+            title = "PostScraper AI"
+            setNavigationIcon(R.drawable.ic_hamburger)
+            setNavigationIconTint(Color.parseColor("#192338"))
+            setNavigationContentDescription("Buka menu")
+            setNavigationOnClickListener {
+                binding.drawerRoot.openDrawer(GravityCompat.START)
+            }
         }
         binding.btnNavChat.setOnClickListener { showChat() }
         binding.btnNavSettings.setOnClickListener { showSettings() }
@@ -105,7 +114,10 @@ class AssistantActivity : AppCompatActivity() {
         binding.btnAttachText.setOnClickListener { openTextPicker() }
         binding.btnRemoveAttachment.setOnClickListener { clearAttachment() }
         binding.btnSendChat.setOnClickListener { sendMessage() }
-        binding.btnWelcomeSettings.setOnClickListener { showSettings() }
+        binding.btnWelcomeSettings.setOnClickListener {
+            showSettings()
+            if (!importInProgress && !isGenerating) modelPicker.launch(arrayOf("*/*"))
+        }
         binding.btnImportModel.setOnClickListener {
             if (isGenerating) {
                 toast("Tunggu proses chat selesai sebelum mengganti model.")
@@ -178,6 +190,15 @@ class AssistantActivity : AppCompatActivity() {
             "Belum ada model. Impor model GGUF yang kompatibel, misalnya Qwen2.5-3B-Instruct Q4_K_M. File asli tidak akan dihapus."
         }
         binding.swUseLocalModel.isChecked = settings.useLocalModelCleaning
+        binding.swUseLocalModel.isEnabled =
+            !importInProgress && settings.localModelPath.isNotBlank() && model.isFile
+        binding.btnImportModel.isEnabled = !importInProgress
+        binding.btnSaveSettings.isEnabled = !importInProgress
+        binding.btnImportModel.text = if (importInProgress) "Mengimpor model…" else "Impor / ganti model GGUF"
+        if (importInProgress) binding.tvModelStatus.text = importProgressLabel
+        binding.swProxyEnabled.isEnabled = !importInProgress
+        binding.etProxyHost.isEnabled = !importInProgress
+        binding.etProxyPort.isEnabled = !importInProgress
         binding.swProxyEnabled.isChecked = settings.proxyEnabled
         binding.etProxyHost.setText(settings.proxyHost)
         binding.etProxyPort.setText(settings.proxyPort.toString())
@@ -185,6 +206,10 @@ class AssistantActivity : AppCompatActivity() {
     }
 
     private fun saveSettings() {
+        if (importInProgress) {
+            toast("Tunggu sampai impor model selesai.")
+            return
+        }
         if (isGenerating) {
             toast("Tunggu proses chat selesai sebelum menyimpan pengaturan.")
             return
@@ -223,8 +248,8 @@ class AssistantActivity : AppCompatActivity() {
     private fun startNewChat() {
         chatHistory.clear()
         binding.chatMessages.removeAllViews()
-        binding.chatMessages.addView(binding.chatWelcome)
         binding.chatWelcome.visibility = View.VISIBLE
+        binding.chatScroll.visibility = View.GONE
         binding.btnSaveResult.visibility = View.GONE
         pendingSaveText = null
         etChatInputSafeClear()
@@ -245,6 +270,7 @@ class AssistantActivity : AppCompatActivity() {
         if (userText.isBlank()) return
         binding.etChatInput.setText("")
         binding.chatWelcome.visibility = View.GONE
+        binding.chatScroll.visibility = View.VISIBLE
         addChatBubble(userText, isUser = true)
         chatHistory.add(Turn("user", userText))
         binding.btnSaveResult.visibility = View.GONE
@@ -415,6 +441,8 @@ class AssistantActivity : AppCompatActivity() {
     }
 
     private fun addChatBubble(text: String, isUser: Boolean) {
+        binding.chatWelcome.visibility = View.GONE
+        binding.chatScroll.visibility = View.VISIBLE
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = if (isUser) Gravity.END else Gravity.START
@@ -536,15 +564,19 @@ class AssistantActivity : AppCompatActivity() {
     }
 
     private fun importModel(uri: Uri) {
-        if (isGenerating) {
-            toast("Tunggu proses chat selesai sebelum mengganti model.")
+        if (isGenerating || importInProgress) {
+            toast("Tunggu proses yang sedang berjalan selesai.")
             return
         }
-        binding.btnImportModel.isEnabled = false
-        binding.tvModelStatus.text = "Mengimpor model. Proses dapat memerlukan waktu dan ruang kosong besar."
+
+        importInProgress = true
+        importProgressLabel = "Menyiapkan impor model…"
+        renderImportProgress(active = true, message = importProgressLabel, indeterminate = true)
+
         lifecycleScope.launch {
+            var temporaryFile: File? = null
             try {
-                val destinationPath = withContext(Dispatchers.IO) {
+                withContext(Dispatchers.IO) {
                     assistantModel.release()
                     val metadata = contentResolver.query(
                         uri,
@@ -570,52 +602,161 @@ class AssistantActivity : AppCompatActivity() {
                     if (!modelDir.exists() && !modelDir.mkdirs()) {
                         throw IOException("Folder model tidak dapat dibuat.")
                     }
-                    val requiredBytes = (metadata.second ?: 0L) + 128L * 1024L * 1024L
+                    val totalBytes = metadata.second?.takeIf { it > 0L } ?: -1L
+                    val requiredBytes = totalBytes.coerceAtLeast(0L) + 128L * 1024L * 1024L
                     if (StatFs(modelDir.absolutePath).availableBytes < requiredBytes) {
-                        throw IOException("Ruang kosong tidak cukup untuk mengimpor model.")
+                        throw IOException("Ruang kosong tidak cukup untuk model dan ruang sementara.")
+                    }
+
+                    withContext(Dispatchers.Main) {
+                        importProgressLabel = "Menyalin ${metadata.first}…"
+                        renderImportProgress(
+                            active = true,
+                            message = importProgressLabel,
+                            percent = if (totalBytes > 0L) 0 else null,
+                            indeterminate = totalBytes <= 0L
+                        )
                     }
 
                     val temporary = File(modelDir, "assistant-model.gguf.part")
-                    if (temporary.exists()) temporary.delete()
+                    temporaryFile = temporary
+                    if (temporary.exists() && !temporary.delete()) {
+                        throw IOException("File impor sementara lama tidak dapat dibersihkan.")
+                    }
+
+                    var copiedBytes = 0L
+                    var lastProgressUpdate = 0L
+                    val buffer = ByteArray(1024 * 1024)
                     val input = contentResolver.openInputStream(uri)
                         ?: throw IOException("File model tidak dapat dibuka.")
                     input.use { source ->
                         temporary.outputStream().buffered(1024 * 1024).use { output ->
-                            source.copyTo(output, 1024 * 1024)
+                            while (true) {
+                                val count = source.read(buffer)
+                                if (count < 0) break
+                                output.write(buffer, 0, count)
+                                copiedBytes += count
+
+                                val now = System.currentTimeMillis()
+                                if (now - lastProgressUpdate >= 250L ||
+                                    (totalBytes > 0L && copiedBytes >= totalBytes)
+                                ) {
+                                    val percent = if (totalBytes > 0L) {
+                                        ((copiedBytes * 100L) / totalBytes).coerceIn(0L, 100L).toInt()
+                                    } else null
+                                    val progressText = if (percent != null) {
+                                        "Menyalin model: $percent% • ${formatBytes(copiedBytes)} / ${formatBytes(totalBytes)}"
+                                    } else {
+                                        "Menyalin model: ${formatBytes(copiedBytes)}"
+                                    }
+                                    withContext(Dispatchers.Main) {
+                                        importProgressLabel = progressText
+                                        renderImportProgress(
+                                            active = true,
+                                            message = progressText,
+                                            percent = percent,
+                                            indeterminate = percent == null
+                                        )
+                                    }
+                                    lastProgressUpdate = now
+                                }
+                            }
                         }
                     }
-                    if (temporary.length() < 100L * 1024L * 1024L) {
-                        temporary.delete()
-                        throw IOException("File terlalu kecil untuk model GGUF yang lengkap.")
+
+                    if (copiedBytes < 100L * 1024L * 1024L || temporary.length() != copiedBytes) {
+                        throw IOException("File terlalu kecil atau salinan model GGUF tidak lengkap.")
                     }
 
                     val destination = File(modelDir, "assistant-model.gguf")
-                    if (destination.exists() && !destination.delete()) {
-                        temporary.delete()
-                        throw IOException("Model sebelumnya tidak dapat diganti.")
-                    }
-                    if (!temporary.renameTo(destination)) {
-                        temporary.copyTo(destination, overwrite = true)
-                        temporary.delete()
-                    }
-                    val current = settingsStore.load()
-                    settingsStore.save(
-                        current.copy(
-                            localModelPath = destination.absolutePath,
-                            useLocalModelCleaning = true
+                    val backup = File(modelDir, "assistant-model.gguf.backup")
+                    var backupMade = false
+                    try {
+                        if (backup.exists() && !backup.delete()) {
+                            throw IOException("Cadangan model sebelumnya tidak bisa dibersihkan.")
+                        }
+                        if (destination.exists()) {
+                            if (!destination.renameTo(backup)) {
+                                throw IOException("Model lama tidak dapat diamankan sebelum diganti.")
+                            }
+                            backupMade = true
+                        }
+
+                        if (!temporary.renameTo(destination)) {
+                            temporary.copyTo(destination, overwrite = true)
+                            temporary.delete()
+                        }
+                        if (!destination.isFile || destination.length() < 100L * 1024L * 1024L) {
+                            throw IOException("Validasi salinan model gagal.")
+                        }
+
+                        val current = settingsStore.load()
+                        settingsStore.save(
+                            current.copy(
+                                localModelPath = destination.absolutePath,
+                                useLocalModelCleaning = true
+                            )
                         )
-                    )
-                    destination.absolutePath
+                        if (backupMade) backup.delete()
+                    } catch (e: Exception) {
+                        if (backupMade) {
+                            destination.delete()
+                            if (!backup.renameTo(destination)) {
+                                throw IOException(
+                                    (e.message ?: "Impor model gagal.") +
+                                        " Model lama perlu dipulihkan dari " + backup.absolutePath
+                                )
+                            }
+                        } else if (settingsStore.load().localModelPath != destination.absolutePath) {
+                            destination.delete()
+                        }
+                        throw e
+                    }
                 }
-                toast("Model berhasil diimpor.")
-                loadSettingsIntoUi()
+
+                toast("Model berhasil diimpor dan siap digunakan.")
                 showChat()
             } catch (e: Exception) {
-                loadSettingsIntoUi()
-                toast("Gagal mengimpor model: " + (e.message ?: e.javaClass.simpleName))
+                toast("Impor model gagal: " + (e.message ?: e.javaClass.simpleName))
             } finally {
-                binding.btnImportModel.isEnabled = true
+                temporaryFile?.let { try { if (it.exists()) it.delete() } catch (_: Exception) { } }
+                importInProgress = false
+                loadSettingsIntoUi()
+                renderImportProgress(active = false)
             }
+        }
+    }
+
+    private fun renderImportProgress(
+        active: Boolean,
+        message: String = "",
+        percent: Int? = null,
+        indeterminate: Boolean = percent == null
+    ) {
+        binding.tvImportProgress.visibility = if (active) View.VISIBLE else View.GONE
+        binding.progressImportModel.visibility = if (active) View.VISIBLE else View.GONE
+        binding.progressImportModel.isIndeterminate = active && indeterminate
+        if (percent != null) binding.progressImportModel.progress = percent.coerceIn(0, 100)
+        binding.btnImportModel.isEnabled = !active
+        binding.btnImportModel.text = if (active) "Mengimpor model…" else "Impor / ganti model GGUF"
+        binding.btnSaveSettings.isEnabled = !active
+        binding.swUseLocalModel.isEnabled = !active &&
+            settingsStore.load().localModelPath.let { it.isNotBlank() && File(it).isFile }
+        binding.swProxyEnabled.isEnabled = !active
+        binding.etProxyHost.isEnabled = !active
+        binding.etProxyPort.isEnabled = !active
+        if (active) {
+            binding.tvImportProgress.text = message
+            importProgressLabel = message
+            binding.tvModelStatus.text = message
+        }
+    }
+
+    private fun formatBytes(bytes: Long): String {
+        return if (bytes >= 1024L * 1024L * 1024L) {
+            String.format(Locale.getDefault(), "%.2f GB", bytes / 1_073_741_824.0)
+        } else {
+            String.format(Locale.getDefault(), "%.1f MB", bytes / 1_048_576.0)
         }
     }
 

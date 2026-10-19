@@ -48,63 +48,69 @@
                     android:textColor="@color/text_secondary"
                     android:textSize="12sp" />
 
-                <ScrollView
-                    android:id="@+id/chatScroll"
+                <FrameLayout
+                    android:id="@+id/chatContent"
                     android:layout_width="match_parent"
                     android:layout_height="0dp"
-                    android:layout_weight="1"
-                    android:clipToPadding="false"
-                    android:fillViewport="true"
-                    android:overScrollMode="never"
-                    android:paddingStart="14dp"
-                    android:paddingTop="12dp"
-                    android:paddingEnd="14dp"
-                    android:paddingBottom="12dp">
+                    android:layout_weight="1">
 
-                    <LinearLayout
-                        android:id="@+id/chatMessages"
+                    <ScrollView
+                        android:id="@+id/chatScroll"
                         android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:orientation="vertical">
+                        android:layout_height="match_parent"
+                        android:clipToPadding="false"
+                        android:fillViewport="true"
+                        android:overScrollMode="never"
+                        android:visibility="gone"
+                        android:paddingStart="14dp"
+                        android:paddingTop="12dp"
+                        android:paddingEnd="14dp"
+                        android:paddingBottom="12dp">
 
                         <LinearLayout
-                            android:id="@+id/chatWelcome"
+                            android:id="@+id/chatMessages"
                             android:layout_width="match_parent"
-                            android:layout_height="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="vertical" />
+                    </ScrollView>
+
+                    <LinearLayout
+                        android:id="@+id/chatWelcome"
+                        android:layout_width="match_parent"
+                        android:layout_height="match_parent"
+                        android:gravity="center"
+                        android:orientation="vertical"
+                        android:padding="24dp">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
                             android:gravity="center"
-                            android:orientation="vertical"
-                            android:padding="24dp">
+                            android:text="Apa yang ingin kamu kerjakan?"
+                            android:textColor="@color/text_primary"
+                            android:textSize="23sp"
+                            android:textStyle="bold" />
 
-                            <TextView
-                                android:layout_width="wrap_content"
-                                android:layout_height="wrap_content"
-                                android:gravity="center"
-                                android:text="Apa yang ingin kamu kerjakan?"
-                                android:textColor="@color/text_primary"
-                                android:textSize="23sp"
-                                android:textStyle="bold" />
+                        <TextView
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="10dp"
+                            android:gravity="center"
+                            android:text="Chat dengan model lokal, minta bantuan mengolah teks, atau buka fitur Scraper."
+                            android:textColor="@color/text_secondary"
+                            android:textSize="14sp"
+                            android:lineSpacingExtra="3dp" />
 
-                            <TextView
-                                android:layout_width="match_parent"
-                                android:layout_height="wrap_content"
-                                android:layout_marginTop="10dp"
-                                android:gravity="center"
-                                android:text="Chat dengan model lokal, minta bantuan mengolah teks, atau buka fitur Scraper."
-                                android:textColor="@color/text_secondary"
-                                android:textSize="14sp"
-                                android:lineSpacingExtra="3dp" />
-
-                            <com.google.android.material.button.MaterialButton
-                                android:id="@+id/btnWelcomeSettings"
-                                style="@style/Widget.Material3.Button.OutlinedButton"
-                                android:layout_width="wrap_content"
-                                android:layout_height="wrap_content"
-                                android:layout_marginTop="18dp"
-                                android:text="Impor model lokal"
-                                app:cornerRadius="18dp" />
-                        </LinearLayout>
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/btnWelcomeSettings"
+                            style="@style/Widget.Material3.Button.OutlinedButton"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="18dp"
+                            android:text="Impor model lokal"
+                            app:cornerRadius="18dp" />
                     </LinearLayout>
-                </ScrollView>
+                </FrameLayout>
 
                 <LinearLayout
                     android:id="@+id/attachmentBar"
@@ -287,6 +293,27 @@
                                 android:layout_marginTop="12dp"
                                 android:text="Impor / ganti model GGUF"
                                 app:cornerRadius="16dp" />
+
+                            <TextView
+                                android:id="@+id/tvImportProgress"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="10dp"
+                                android:text="Siap mengimpor model."
+                                android:textColor="@color/text_secondary"
+                                android:textSize="12sp"
+                                android:visibility="gone" />
+
+                            <ProgressBar
+                                android:id="@+id/progressImportModel"
+                                style="?android:attr/progressBarStyleHorizontal"
+                                android:layout_width="match_parent"
+                                android:layout_height="6dp"
+                                android:layout_marginTop="6dp"
+                                android:max="100"
+                                android:progress="0"
+                                android:indeterminate="true"
+                                android:visibility="gone" />
 
                             <com.google.android.material.materialswitch.MaterialSwitch
                                 android:id="@+id/swUseLocalModel"
