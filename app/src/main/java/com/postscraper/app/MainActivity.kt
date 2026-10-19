@@ -2,19 +2,13 @@ package com.postscraper.app
 
 import android.Manifest
 import android.content.Intent
-import android.app.ProgressDialog
-import android.net.Uri
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
-import android.os.StatFs
-import android.provider.OpenableColumns
 import android.text.method.ScrollingMovementMethod
 import android.view.View
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.lifecycle.lifecycleScope
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
@@ -30,7 +24,6 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.io.IOException
 import java.io.FileWriter
 import java.net.URI
 import java.text.SimpleDateFormat
@@ -63,10 +56,6 @@ class MainActivity : AppCompatActivity() {
     private val crawlEngine by lazy(LazyThreadSafetyMode.NONE) {
         CrawlEngine(pageLoader, localModelCleaner)
     }
-    private val modelPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) importLocalModel(uri)
-    }
-
     // Semua pekerjaan crawl terikat ke lifecycle Activity; tidak membuat scope liar per tombol.
     private val activityJob = SupervisorJob()
     private val crawlerScope = CoroutineScope(activityJob + Dispatchers.IO)
@@ -139,9 +128,16 @@ class MainActivity : AppCompatActivity() {
         binding.btnStart.setOnClickListener { startCrawl() }
         binding.btnStop.setOnClickListener {
             if (!crawlRunning) return@setOnClickListener
+            val nativeModelBusy = localModelCleaner.isInferenceRunning
             stopRequested = true
             pageLoader.cancelCurrent()
-            log(">> STOP: permintaan jaringan/WebView dibatalkan. Hasil yang sudah terkumpul tetap disimpan.")
+            log(
+                if (nativeModelBusy) {
+                    ">> STOP diterima. Jaringan/WebView dibatalkan; inferensi Qwen yang sedang berjalan harus selesai dulu karena API native ini tidak mendukung interupsi di tengah inferensi. Hasil terkumpul tetap disimpan."
+                } else {
+                    ">> STOP diterima. Permintaan jaringan/WebView dibatalkan. Hasil yang sudah terkumpul tetap disimpan."
+                }
+            )
         }
         binding.btnClearHistory.setOnClickListener {
             if (crawlRunning) {
@@ -336,97 +332,6 @@ class MainActivity : AppCompatActivity() {
                         if (!isFinishing) toast(if (fileSaved) "Selesai: $collected post disimpan" else "Crawling selesai; periksa log")
                     }
                 }
-            }
-        }
-    }
-
-    private fun importLocalModel(uri: Uri) {
-        if (crawlRunning) {
-            toast("Hentikan crawling sebelum mengganti model")
-            return
-        }
-
-        val progress = ProgressDialog(this).apply {
-            setTitle("Memasang model lokal")
-            setMessage("Menyalin file GGUF ke ruang aplikasi. Model sekitar 2 GB memerlukan ruang kosong tambahan.")
-            setCancelable(false)
-            show()
-        }
-
-        lifecycleScope.launch {
-            try {
-                val modelPath = withContext(Dispatchers.IO) {
-                    localModelCleaner.release()
-                    val metadata = contentResolver.query(
-                        uri,
-                        arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE),
-                        null,
-                        null,
-                        null
-                    )?.use { cursor ->
-                        if (!cursor.moveToFirst()) null else {
-                            val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                            val sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE)
-                            val name = if (nameIndex >= 0) cursor.getString(nameIndex) else null
-                            val size = if (sizeIndex >= 0 && !cursor.isNull(sizeIndex)) cursor.getLong(sizeIndex) else null
-                            Pair(name ?: "model.gguf", size)
-                        }
-                    } ?: Pair("model.gguf", null)
-
-                    if (!metadata.first.endsWith(".gguf", ignoreCase = true)) {
-                        throw IOException("Pilih file yang berakhiran .gguf")
-                    }
-
-                    val modelDir = getExternalFilesDir("models") ?: File(filesDir, "models")
-                    if (!modelDir.exists() && !modelDir.mkdirs()) {
-                        throw IOException("Folder penyimpanan model tidak bisa dibuat")
-                    }
-                    val requiredBytes = (metadata.second ?: 0L) + 128L * 1024L * 1024L
-                    if (StatFs(modelDir.absolutePath).availableBytes < requiredBytes) {
-                        throw IOException("Ruang kosong tidak cukup. Butuh file model plus ruang sementara untuk impor.")
-                    }
-
-                    val temporary = File(modelDir, "qwen-model.gguf.part")
-                    if (temporary.exists()) temporary.delete()
-                    val input = contentResolver.openInputStream(uri)
-                        ?: throw IOException("File model tidak bisa dibuka")
-                    input.use { source ->
-                        temporary.outputStream().buffered(1024 * 1024).use { output ->
-                            source.copyTo(output, 1024 * 1024)
-                        }
-                    }
-
-                    if (temporary.length() < 100L * 1024L * 1024L) {
-                        temporary.delete()
-                        throw IOException("File terlalu kecil atau bukan model GGUF lengkap")
-                    }
-
-                    val destination = File(modelDir, "qwen-model.gguf")
-                    if (destination.exists() && !destination.delete()) {
-                        temporary.delete()
-                        throw IOException("Model lama tidak bisa diganti")
-                    }
-                    if (!temporary.renameTo(destination)) {
-                        temporary.copyTo(destination, overwrite = true)
-                        temporary.delete()
-                    }
-
-                    settingsStore.save(
-                        settingsStore.load().copy(
-                            localModelPath = destination.absolutePath,
-                            useLocalModelCleaning = true
-                        )
-                    )
-                    destination.absolutePath
-                }
-
-                log("Model lokal terpasang: " + File(modelPath).name)
-                toast("Model lokal berhasil dipasang")
-            } catch (e: Exception) {
-                log("Gagal memasang model lokal: " + (e.message ?: e.javaClass.simpleName))
-                toast("Gagal memasang model: " + (e.message ?: "periksa ruang penyimpanan"))
-            } finally {
-                try { progress.dismiss() } catch (_: Exception) { }
             }
         }
     }
