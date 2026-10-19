@@ -91,3 +91,12 @@ The hamburger settings allow importing Qwen2.5-3B-Instruct-Abliterated.Q4_K_M.gg
 
 - GitHub Actions caches `~/.android/debug.keystore` on the default branch so future debug APK builds can retain the same signing identity. The cache is a development/debug key, not a production release key.
 - The previous v1.8 artifact was produced before this key was persisted; its signing certificate differs from the audited v1.9 build. Android may reject v1.9 as an in-place update. Back up the original GGUF file outside the app and be prepared to uninstall v1.8 once before installing the first stable-key v1.9 build. Uninstalling removes app-private settings/history and the imported copy of the model; the original GGUF file elsewhere on storage remains.
+
+
+## Natural-language scraping from chat (v2.0)
+
+- Messages containing a URL plus an extraction action such as "ambil", "kumpulkan", "ekstrak", "crawl", or "unduh" are routed to the Scraper rather than passed to the local model as if it could browse on its own.
+- Explicit "kata unik" requests export a single `kata_unik_*.txt` file containing one lowercase distinct word per line, derived from article body text only (no article titles).
+- To prevent unexpected mobile-data usage, chat-generated scrape jobs show a confirmation before the crawler starts. They use a maximum of 1,000 articles per run and turn off history skipping for unique-word vocabulary jobs so earlier articles are included.
+- A requested target such as seven million unique words is a request, not a promise. The actual vocabulary depends on the source pages the crawler can access and parse; the app reports the real count rather than inventing words.
+- The chat's "thinking" indicator appears beneath the latest user message inside the conversation. The header only displays the installed model status.
