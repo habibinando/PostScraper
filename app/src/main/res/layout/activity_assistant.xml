@@ -207,6 +207,7 @@
                             android:layout_height="wrap_content"
                             android:hint="Tulis pesan"
                             android:inputType="textCapSentences|textMultiLine"
+                            android:imeOptions="actionSend"
                             android:maxLines="5"
                             android:minHeight="48dp"
                             android:paddingStart="14dp"
