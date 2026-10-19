@@ -141,10 +141,7 @@ class AssistantActivity : AppCompatActivity() {
         }
         binding.btnNavChat.setOnClickListener { showChat() }
         binding.btnNavSettings.setOnClickListener { showSettings() }
-        binding.btnNavScraper.setOnClickListener {
-            binding.drawerRoot.closeDrawer(GravityCompat.START)
-            startActivity(Intent(this, MainActivity::class.java))
-        }
+        binding.btnNavScraper.setOnClickListener { openScraper(null) }
         binding.btnNewChat.setOnClickListener {
             startNewChat()
             binding.drawerRoot.closeDrawer(GravityCompat.START)
@@ -489,13 +486,38 @@ class AssistantActivity : AppCompatActivity() {
                         "\nPeriksa target post dan tekan Mulai untuk menjalankan crawling."
                 }
             )
-            val intent = Intent(this, MainActivity::class.java)
-            if (url != null) intent.putExtra("seed_url", normalizeUrl(url))
-            binding.drawerRoot.closeDrawer(GravityCompat.START)
-            startActivity(intent)
+            openScraper(url)
             return true
         }
         return false
+    }
+
+    /**
+     * The scraper has its own LocalModelCleaner instance. Release this Activity's
+     * native model first so opening the scraper does not keep two copies of a
+     * multi-gigabyte model in RAM at once.
+     */
+    private fun openScraper(seedUrl: String?) {
+        if (isGenerating || importInProgress) {
+            toast("Tunggu proses model selesai sebelum membuka Scraper.")
+            return
+        }
+        val intent = Intent(this, MainActivity::class.java)
+        if (seedUrl != null) intent.putExtra("seed_url", normalizeUrl(seedUrl))
+        binding.drawerRoot.closeDrawer(GravityCompat.START)
+
+        lifecycleScope.launch {
+            try {
+                if (assistantModelDelegate.isInitialized()) {
+                    withContext(Dispatchers.IO) { assistantModel.release() }
+                }
+                if (!isFinishing && !isDestroyed) startActivity(intent)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                toast("Gagal membuka Scraper: " + (e.message ?: e.javaClass.simpleName))
+            }
+        }
     }
 
     private fun findUrl(text: String): String? {
