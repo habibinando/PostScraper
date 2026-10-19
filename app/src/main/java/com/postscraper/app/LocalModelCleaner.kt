@@ -63,6 +63,30 @@ internal class LocalModelCleaner(
             response
         }
 
+    /**
+     * General local inference entry point used by the chat and text-editor UI.
+     * Shares the same model instance/mutex as article extraction to avoid loading
+     * a second copy of a multi-gigabyte GGUF file into memory.
+     */
+    suspend fun generate(
+        prompt: String,
+        systemPrompt: String,
+        modelPath: String,
+        maxTokens: Int = 850
+    ): String = mutex.withLock {
+        val file = File(modelPath)
+        if (!file.isFile || file.length() < 100L * 1024L * 1024L) {
+            throw IllegalStateException("File model GGUF tidak ada atau tidak lengkap")
+        }
+        val model = getOrLoadModel(file.absolutePath)
+        Llama.complete(
+            model = model,
+            prompt = prompt,
+            systemPrompt = systemPrompt,
+            maxTokens = maxTokens.coerceIn(64, 1600)
+        ).text.trim()
+    }
+
     suspend fun release() = mutex.withLock {
         loadedModel?.let { if (it.isLoaded) Llama.releaseModel(it) }
         loadedModel = null
