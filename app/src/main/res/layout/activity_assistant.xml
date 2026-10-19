@@ -8,6 +8,7 @@
     android:background="@color/bg_light">
 
     <LinearLayout
+        android:id="@+id/mainContentRoot"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:orientation="vertical">
@@ -35,18 +36,38 @@
                 android:background="@color/bg_light"
                 android:orientation="vertical">
 
-                <TextView
-                    android:id="@+id/tvChatStatus"
+                <LinearLayout
+                    android:id="@+id/chatStatusBar"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:background="@color/surface_white"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal"
                     android:paddingStart="16dp"
-                    android:paddingTop="7dp"
+                    android:paddingTop="8dp"
                     android:paddingEnd="16dp"
-                    android:paddingBottom="7dp"
-                    android:text="Model lokal belum diimpor"
-                    android:textColor="@color/text_secondary"
-                    android:textSize="12sp" />
+                    android:paddingBottom="8dp">
+
+                    <TextView
+                        android:id="@+id/tvChatStatus"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:ellipsize="end"
+                        android:maxLines="2"
+                        android:text="Model lokal belum diimpor"
+                        android:textColor="@color/text_secondary"
+                        android:textSize="12sp" />
+
+                    <ProgressBar
+                        android:id="@+id/progressChat"
+                        style="?android:attr/progressBarStyleSmall"
+                        android:layout_width="22dp"
+                        android:layout_height="22dp"
+                        android:layout_marginStart="10dp"
+                        android:indeterminate="true"
+                        android:visibility="gone" />
+                </LinearLayout>
 
                 <FrameLayout
                     android:id="@+id/chatContent"
@@ -186,6 +207,7 @@
                             android:layout_height="wrap_content"
                             android:hint="Tulis pesan"
                             android:inputType="textCapSentences|textMultiLine"
+                            android:imeOptions="actionSend"
                             android:maxLines="5"
                             android:minHeight="48dp"
                             android:paddingStart="14dp"

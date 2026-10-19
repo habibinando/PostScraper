@@ -6,6 +6,7 @@ import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
@@ -153,6 +154,9 @@ internal class PageLoader(
                     }
                 }
             }
+        } catch (e: CancellationException) {
+            // Do not swallow lifecycle/Stop cancellation as if it were a normal page failure.
+            throw e
         } catch (_: Exception) {
             null
         }

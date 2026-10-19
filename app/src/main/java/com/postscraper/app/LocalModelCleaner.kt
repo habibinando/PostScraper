@@ -18,6 +18,12 @@ internal class LocalModelCleaner(
     private var loadedPath: String? = null
     private var loadedModel: LlamaModel? = null
 
+    @Volatile
+    private var inferenceRunning = false
+
+    /** True only while the native llama.cpp call is actively running. */
+    val isInferenceRunning: Boolean get() = inferenceRunning
+
     suspend fun extractArticle(title: String, html: String, modelPath: String, minChars: Int): String? =
         mutex.withLock {
             if (shouldStop()) return@withLock null
@@ -49,12 +55,18 @@ internal class LocalModelCleaner(
             val model = getOrLoadModel(file.absolutePath)
             if (shouldStop()) return@withLock null
 
-            val response = Llama.complete(
-                model = model,
-                prompt = "Judul halaman: $title\n\nTeks halaman yang sudah dibersihkan dari menu dan skrip:\n$inputText",
-                systemPrompt = EXTRACT_PROMPT,
-                maxTokens = 650
-            ).text.trim()
+            val extractionTokenLimit = (minChars / 3 + 64).coerceIn(128, 650)
+            val response = try {
+                inferenceRunning = true
+                Llama.complete(
+                    model = model,
+                    prompt = "Judul halaman: $title\n\nTeks halaman yang sudah dibersihkan dari menu dan skrip:\n$inputText",
+                    systemPrompt = EXTRACT_PROMPT,
+                    maxTokens = extractionTokenLimit
+                ).text.trim()
+            } finally {
+                inferenceRunning = false
+            }
 
             if (shouldStop()) return@withLock null
             if (response.length < minChars || response.contains("NO_ARTICLE", ignoreCase = true)) {
@@ -72,19 +84,33 @@ internal class LocalModelCleaner(
         prompt: String,
         systemPrompt: String,
         modelPath: String,
-        maxTokens: Int = 850
+        maxTokens: Int = 128,
+        onPhase: suspend (String) -> Unit = {}
     ): String = mutex.withLock {
         val file = File(modelPath)
         if (!file.isFile || file.length() < 100L * 1024L * 1024L) {
             throw IllegalStateException("File model GGUF tidak ada atau tidak lengkap")
         }
+
+        val existingIsReady = loadedModel?.isLoaded == true && loadedPath == file.absolutePath
+        if (!existingIsReady) onPhase("Memuat model lokal (pertama kali bisa lebih lama)…")
         val model = getOrLoadModel(file.absolutePath)
-        Llama.complete(
-            model = model,
-            prompt = prompt,
-            systemPrompt = systemPrompt,
-            maxTokens = maxTokens.coerceIn(64, 1600)
-        ).text.trim()
+        onPhase("Model siap; menghasilkan jawaban…")
+
+        // The free llama-android API returns only after native generation finishes
+        // and has no token-stream or interrupt API. Keep answers bounded so a model
+        // that does not emit EOS cannot occupy the UI for hundreds of tokens.
+        try {
+            inferenceRunning = true
+            Llama.complete(
+                model = model,
+                prompt = prompt,
+                systemPrompt = systemPrompt,
+                maxTokens = maxTokens.coerceIn(64, 768)
+            ).text.trim()
+        } finally {
+            inferenceRunning = false
+        }
     }
 
     suspend fun release() = mutex.withLock {

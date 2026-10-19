@@ -1,10 +1,16 @@
-# PostScraper — Android article corpus extractor
+# PostScraper AI — local Android assistant and article scraper
 
-PostScraper crawls a website from a seed URL, extracts article text, merges multi-page articles where the site exposes a recognizable next-page link, de-duplicates canonical article URLs, and exports a plain-text corpus to the Android **Downloads** folder.
+PostScraper AI combines an on-device GGUF chat assistant, TXT editing, and an article scraper. Chat and text editing use the imported model locally; web requests are only used by the scraper. There is no external chat API dependency.
+
+The scraper crawls a website from a seed URL, extracts article text, merges multi-page articles where the site exposes a recognizable next-page link, de-duplicates canonical article URLs, and exports a plain-text corpus to the Android **Downloads** folder.
 
 ## Features
 
 - Native Android app; minimum Android API 26.
+- Chat-first interface with a responsive side drawer, edge-to-edge/system-bar handling, and an input composer that stays above the keyboard and navigation bar.
+- Chat with the imported local GGUF model using on-device CPU inference.
+- Import a TXT file, request proofreading/reformatting/summarization/translation, then save the result as a separate TXT file.
+- GGUF import checks the file header and copy size; the model-use switch is disabled during import and there is visible progress feedback.
 - Crawls same-domain links with article URLs prioritized over category pages.
 - Local extraction using Jsoup, with AMP fallback for JalanTikus and JavaScript rendering via WebView.
 - Pagination-aware merging: attempts to combine up to 12 pages of the same article into one corpus entry.
@@ -45,7 +51,7 @@ Output file format: `korpus_crawl_<domain>_<timestamp>.txt`.
 - `CrawlEngine.kt` — work queues, crawl loop, duplicate handling, fallback order, and page merging.
 - `ArticleExtractor.kt` — URL normalization, pagination detection, article content extraction, cleanup, and Markdown parsing.
 - `PageLoader.kt` — HTTP fetching, request cancellation, and WebView JavaScript rendering.
-- `LocalModelCleaner.kt` — optional on-device GGUF extraction fallback used only when normal extraction cannot recover enough article text.
+- `LocalModelCleaner.kt` — shared serialized access to a local GGUF model for chat, text editing, and optional article-extraction fallback.
 - `TextExporter.kt` — final text assembly and Android Downloads export.
 
 ## Build APK
@@ -66,3 +72,16 @@ Respect the target site's Terms of Service, robots/access policies, copyright, r
 ## On-device article extraction fallback
 
 The hamburger settings allow importing Qwen2.5-3B-Instruct-Abliterated.Q4_K_M.gguf. The model runs only as the final fallback when HTML, AMP, and WebView have not produced enough article text. No external reader or scraping API is used. Article fetching still requires an internet connection, but final extraction runs on-device. If an inference is already running, Stop may need to wait for that one model call to return.
+
+
+## Chat/model limitations
+
+- Inference is CPU-only with the current free `llama-android:0.1.1` AAR. The API returns the full response only after native generation finishes; it does not expose token streaming or a mid-generation interrupt. The UI therefore shows the current phase and elapsed time, and normal chat output is capped at 128 tokens to avoid very long waits if a model fails to emit an end token.
+- TXT input is capped at 6,000 characters. Text-edit output is capped at 512 tokens; review long edits before replacing any source document.
+- The scraper can cancel HTTP requests and WebView rendering immediately. If the local GGUF model is already generating an extraction, Stop records the request but must wait for that native inference call to finish.
+- A valid GGUF header does not guarantee a compatible model or sufficient RAM. Model quality and response speed depend on the selected file and device hardware.
+
+## Current app version
+
+- Version name: 1.9
+- Version code: 10
