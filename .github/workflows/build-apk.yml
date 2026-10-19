@@ -45,6 +45,13 @@ jobs:
           gradle --version
           sdkmanager --list_installed
 
+      # Persist the debug signing key across main-branch builds so updates retain the same signature.
+      - name: Restore stable debug signing key
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: postscraper-debug-keystore-v1
+
       - name: Build debug APK
         run: gradle assembleDebug --no-daemon --stacktrace
 
