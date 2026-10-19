@@ -1,6 +1,7 @@
 package com.postscraper.app
 
 import android.Manifest
+import android.content.Intent
 import android.app.ProgressDialog
 import android.net.Uri
 import android.content.pm.PackageManager
@@ -88,16 +89,17 @@ class MainActivity : AppCompatActivity() {
 
         binding.toolbar.setNavigationOnClickListener {
             if (crawlRunning) {
-                toast("Hentikan crawling sebelum mengubah pengaturan")
+                toast("Hentikan crawling sebelum membuka menu utama.")
             } else {
-                SettingsDialog(
-                    activity = this,
-                    store = settingsStore,
-                    onPickModel = { modelPicker.launch(arrayOf("*/*")) }
-                ).show {
-                    log("Pengaturan tersimpan.")
-                }
+                startActivity(
+                    Intent(this, AssistantActivity::class.java)
+                        .putExtra("start_screen", "settings")
+                )
             }
+        }
+
+        intent.getStringExtra("seed_url")?.takeIf { it.isNotBlank() }?.let {
+            binding.etSeedUrl.setText(it)
         }
 
         // Riwayat lama (versi sebelumnya mencatat semua halaman, termasuk yang gagal) dibuang.

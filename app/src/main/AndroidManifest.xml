@@ -16,9 +16,9 @@
         android:usesCleartextTraffic="true"
         android:theme="@style/Theme.PostScraper">
 
-        <!-- configChanges: layar diputar tidak me-restart Activity (crawl tetap tampil di log) -->
+        <!-- Chat menjadi halaman utama; Scraper tetap dapat dibuka dari menu samping. -->
         <activity
-            android:name=".MainActivity"
+            android:name=".AssistantActivity"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
             android:windowSoftInputMode="adjustResize"
             android:exported="true">
@@ -27,6 +27,12 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <activity
+            android:name=".MainActivity"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
+            android:windowSoftInputMode="adjustResize"
+            android:exported="false" />
     </application>
 
 </manifest>
