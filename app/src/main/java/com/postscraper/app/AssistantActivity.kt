@@ -627,7 +627,7 @@ class AssistantActivity : AppCompatActivity() {
     }
 
     private companion object {
-        const val MAX_FILE_CHARS = 8_000
+        const val MAX_FILE_CHARS = 6_000
         const val CHAT_SYSTEM_PROMPT =
             "Kamu adalah asisten AI lokal yang membantu dalam bahasa pengguna, terutama bahasa Indonesia. " +
             "Jawab jelas, relevan, dan jujur. Kamu berjalan di perangkat dan tidak memiliki akses internet atau " +
