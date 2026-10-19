@@ -536,37 +536,96 @@ class AssistantActivity : AppCompatActivity() {
             return true
         }
 
-        val wantsScraper = lower.startsWith("/scrape") || lower.startsWith("/crawl") ||
-            lower.contains("buka scraper") || lower.contains("mulai scraping") ||
-            lower.contains("ambil artikel dari")
+        val url = findUrl(text)
+        val explicitScraperCommand = lower.startsWith("/scrape") || lower.startsWith("/crawl")
+        val actionWords = listOf(
+            "ambil", "ambilkan", "kumpulkan", "himpun", "ekstrak", "ekstraksi",
+            "scrape", "scraping", "crawl", "crawling", "unduh", "download",
+            "tarik data", "salin", "buat daftar", "jadikan txt", "simpan ke txt"
+        )
+        val dataWords = listOf(
+            "artikel", "berita", "kata", "konten", "isi", "teks", "post", "halaman",
+            "situs", "website", "txt", "kata unik"
+        )
+        val hasAction = actionWords.any { lower.contains(it) }
+        val hasDataTarget = dataWords.any { lower.contains(it) }
+        val wantsScraper = explicitScraperCommand ||
+            lower.contains("buka scraper") ||
+            lower.contains("mulai scraping") ||
+            lower.contains("ambil artikel dari") ||
+            (url != null && hasAction && hasDataTarget)
+
         if (wantsScraper) {
-            val url = findUrl(text)
-            addAssistantReply(
-                if (url == null) {
-                    "Membuka Scraper. Masukkan URL situs pada kolom sumber, lalu tekan Mulai."
+            val uniqueWordsOnly = listOf(
+                "kata unik", "kata-kata unik", "unique words",
+                "kata tanpa duplikat", "tanpa kata duplikat"
+            ).any { lower.contains(it) }
+            val requestedWords = parseRequestedWordCount(lower)
+            if (url == null) {
+                addAssistantReply("Perintah scraping dikenali. Buka halaman Scraper, lalu masukkan URL sumber untuk melanjutkan.")
+                openScraper(null)
+            } else {
+                val outputDescription = if (uniqueWordsOnly) {
+                    "daftar kata unik, satu kata per baris, tanpa judul artikel"
                 } else {
-                    "Membuka Scraper dengan URL sumber: " + normalizeUrl(url) +
-                        "\nPeriksa target post dan tekan Mulai untuk menjalankan crawling."
+                    "teks artikel dalam satu file TXT"
                 }
-            )
-            openScraper(url)
+                val targetDescription = requestedWords?.let {
+                    " Target yang diminta: %,d kata unik. Jumlah aktual tidak bisa dijamin; Scraper dibatasi maksimal 1.000 artikel per proses."
+                        .format(Locale("id", "ID"), it)
+                }.orEmpty()
+                addAssistantReply(
+                    "Perintah dipahami: ambil data dari ${normalizeUrl(url)} dan buat $outputDescription." +
+                        targetDescription +
+                        " Saya membuka Scraper. Pemakaian data seluler dan baterai bisa besar; konfirmasi sebelum proses dimulai."
+                )
+                openScraper(
+                    seedUrl = url,
+                    uniqueWordsOnly = uniqueWordsOnly,
+                    autoStart = true,
+                    requestedWordCount = requestedWords
+                )
+            }
             return true
         }
         return false
     }
 
+    private fun parseRequestedWordCount(message: String): Long? {
+        val match = Regex(
+            "\\b(\\d+(?:[.,]\\d+)?)\\s*(juta|million|ribu|thousand|miliar|billion)?\\s+kata\\b",
+            RegexOption.IGNORE_CASE
+        ).find(message) ?: return null
+        val amount = match.groupValues[1].replace(",", ".").toDoubleOrNull() ?: return null
+        val multiplier = when (match.groupValues[2].lowercase(Locale.ROOT)) {
+            "juta", "million" -> 1_000_000.0
+            "ribu", "thousand" -> 1_000.0
+            "miliar", "billion" -> 1_000_000_000.0
+            else -> 1.0
+        }
+        val requested = amount * multiplier
+        return if (requested.isFinite() && requested in 1.0..Long.MAX_VALUE.toDouble()) requested.toLong() else null
+    }
+
     /**
-     * The scraper has its own LocalModelCleaner instance. Release this Activity's
-     * native model first so opening the scraper does not keep two copies of a
-     * multi-gigabyte model in RAM at once.
+     * Release this Activity's native model before opening Scraper so the two
+     * screens do not keep duplicate multi-GB models in RAM simultaneously.
      */
-    private fun openScraper(seedUrl: String?) {
+    private fun openScraper(
+        seedUrl: String?,
+        uniqueWordsOnly: Boolean = false,
+        autoStart: Boolean = false,
+        requestedWordCount: Long? = null
+    ) {
         if (isGenerating || importInProgress) {
             toast("Tunggu proses model selesai sebelum membuka Scraper.")
             return
         }
         val intent = Intent(this, MainActivity::class.java)
         if (seedUrl != null) intent.putExtra("seed_url", normalizeUrl(seedUrl))
+        intent.putExtra("unique_words_only", uniqueWordsOnly)
+        intent.putExtra("auto_start_scrape", autoStart && seedUrl != null)
+        requestedWordCount?.let { intent.putExtra("requested_unique_word_count", it) }
         binding.drawerRoot.closeDrawer(GravityCompat.START)
 
         lifecycleScope.launch {
