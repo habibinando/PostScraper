@@ -4,8 +4,8 @@ import android.content.Intent
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
-import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
 import android.os.StatFs
 import android.provider.OpenableColumns
 import android.view.Gravity
@@ -21,9 +21,13 @@ import androidx.core.view.GravityCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.lifecycleScope
 import com.postscraper.app.databinding.ActivityAssistantBinding
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.BufferedReader
@@ -50,6 +54,9 @@ class AssistantActivity : AppCompatActivity() {
     private var isGenerating = false
     private var importInProgress = false
     private var importProgressLabel = "Menyiapkan impor model…"
+    @Volatile private var generationPhase = "Menyiapkan model lokal…"
+    private var generationStartedAt = 0L
+    private var generationTickerJob: Job? = null
     private var attachedFileName: String? = null
     private var attachedFileText: String? = null
     private var attachedFileWasTruncated = false
@@ -76,16 +83,47 @@ class AssistantActivity : AppCompatActivity() {
         binding = ActivityAssistantBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        if (Build.VERSION.SDK_INT >= 35) {
-            WindowCompat.setDecorFitsSystemWindows(window, false)
-            ViewCompat.setOnApplyWindowInsetsListener(binding.drawerRoot) { view, insets ->
-                val bars = insets.getInsets(
-                    WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
-                )
-                view.setPadding(bars.left, bars.top, bars.right, bars.bottom)
-                insets
-            }
+        // Edge-to-edge without hiding the toolbar or the composer behind system bars.
+        // Keep the DrawerLayout full-bleed; inset its content and drawer independently.
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        window.statusBarColor = getColor(R.color.bg_light)
+        window.navigationBarColor = getColor(R.color.bg_light)
+        WindowInsetsControllerCompat(window, binding.drawerRoot).apply {
+            isAppearanceLightStatusBars = true
+            isAppearanceLightNavigationBars = true
         }
+
+        val mainRoot = binding.mainContentRoot
+        val drawer = binding.sideDrawer
+        val mainLeft = mainRoot.paddingLeft
+        val mainTop = mainRoot.paddingTop
+        val mainRight = mainRoot.paddingRight
+        val mainBottom = mainRoot.paddingBottom
+        val drawerLeft = drawer.paddingLeft
+        val drawerTop = drawer.paddingTop
+        val drawerRight = drawer.paddingRight
+        val drawerBottom = drawer.paddingBottom
+
+        ViewCompat.setOnApplyWindowInsetsListener(binding.drawerRoot) { _, insets ->
+            val bars = insets.getInsets(
+                WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
+            )
+            val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
+            mainRoot.setPadding(
+                mainLeft + bars.left,
+                mainTop + bars.top,
+                mainRight + bars.right,
+                mainBottom + maxOf(bars.bottom, ime.bottom)
+            )
+            drawer.setPadding(
+                drawerLeft + bars.left,
+                drawerTop + bars.top,
+                drawerRight + bars.right,
+                drawerBottom + bars.bottom
+            )
+            insets
+        }
+        ViewCompat.requestApplyInsets(binding.drawerRoot)
 
         binding.toolbar.apply {
             visibility = View.VISIBLE
@@ -119,8 +157,8 @@ class AssistantActivity : AppCompatActivity() {
             if (!importInProgress && !isGenerating) modelPicker.launch(arrayOf("*/*"))
         }
         binding.btnImportModel.setOnClickListener {
-            if (isGenerating) {
-                toast("Tunggu proses chat selesai sebelum mengganti model.")
+            if (isGenerating || importInProgress) {
+                toast("Tunggu proses model yang sedang berjalan selesai.")
             } else {
                 modelPicker.launch(arrayOf("*/*"))
             }
@@ -175,7 +213,7 @@ class AssistantActivity : AppCompatActivity() {
         } else {
             "Model lokal belum diimpor • buka Pengaturan"
         }
-        binding.tvChatStatus.text = status
+        if (!isGenerating) binding.tvChatStatus.text = status
         binding.tvDrawerModel.text = status
     }
 
@@ -190,15 +228,20 @@ class AssistantActivity : AppCompatActivity() {
             "Belum ada model. Impor model GGUF yang kompatibel, misalnya Qwen2.5-3B-Instruct Q4_K_M. File asli tidak akan dihapus."
         }
         binding.swUseLocalModel.isChecked = settings.useLocalModelCleaning
+        val controlsAvailable = !importInProgress && !isGenerating
         binding.swUseLocalModel.isEnabled =
-            !importInProgress && settings.localModelPath.isNotBlank() && model.isFile
-        binding.btnImportModel.isEnabled = !importInProgress
-        binding.btnSaveSettings.isEnabled = !importInProgress
-        binding.btnImportModel.text = if (importInProgress) "Mengimpor model…" else "Impor / ganti model GGUF"
+            controlsAvailable && settings.localModelPath.isNotBlank() && model.isFile
+        binding.btnImportModel.isEnabled = controlsAvailable
+        binding.btnSaveSettings.isEnabled = controlsAvailable
+        binding.btnImportModel.text = when {
+            importInProgress -> "Mengimpor model…"
+            isGenerating -> "Model sedang digunakan…"
+            else -> "Impor / ganti model GGUF"
+        }
         if (importInProgress) binding.tvModelStatus.text = importProgressLabel
-        binding.swProxyEnabled.isEnabled = !importInProgress
-        binding.etProxyHost.isEnabled = !importInProgress
-        binding.etProxyPort.isEnabled = !importInProgress
+        binding.swProxyEnabled.isEnabled = controlsAvailable
+        binding.etProxyHost.isEnabled = controlsAvailable
+        binding.etProxyPort.isEnabled = controlsAvailable
         binding.swProxyEnabled.isChecked = settings.proxyEnabled
         binding.etProxyHost.setText(settings.proxyHost)
         binding.etProxyPort.setText(settings.proxyPort.toString())
@@ -246,6 +289,10 @@ class AssistantActivity : AppCompatActivity() {
     }
 
     private fun startNewChat() {
+        if (isGenerating) {
+            toast("Tunggu jawaban model selesai sebelum memulai chat baru.")
+            return
+        }
         chatHistory.clear()
         binding.chatMessages.removeAllViews()
         binding.chatWelcome.visibility = View.VISIBLE
@@ -295,7 +342,7 @@ class AssistantActivity : AppCompatActivity() {
         binding.btnSendChat.isEnabled = false
         binding.btnAttachText.isEnabled = false
         binding.btnSendChat.text = "..."
-        binding.tvChatStatus.text = "Model sedang berpikir di perangkat…"
+        startGenerationIndicator()
 
         lifecycleScope.launch {
             try {
@@ -304,7 +351,8 @@ class AssistantActivity : AppCompatActivity() {
                         prompt = prompt,
                         systemPrompt = systemPrompt,
                         modelPath = settings.localModelPath,
-                        maxTokens = if (editFile) 1200 else 850
+                        maxTokens = if (editFile) 512 else 128,
+                        onPhase = { phase -> generationPhase = phase }
                     )
                 }
                 val safeAnswer = answer.ifBlank { "Model tidak menghasilkan jawaban. Coba instruksi yang lebih singkat." }
@@ -320,6 +368,9 @@ class AssistantActivity : AppCompatActivity() {
                         "\n\nPeriksa apakah file GGUF benar, ruang RAM cukup, dan model didukung."
                 )
             } finally {
+                generationTickerJob?.cancel()
+                generationTickerJob = null
+                binding.progressChat.visibility = View.GONE
                 isGenerating = false
                 binding.btnSendChat.isEnabled = true
                 binding.btnAttachText.isEnabled = true
@@ -330,28 +381,50 @@ class AssistantActivity : AppCompatActivity() {
     }
 
     private fun buildPrompt(currentMessage: String): String {
-        val previous = chatHistory.dropLast(1).takeLast(8)
+        // Keep the single-message context bounded on mid-range phones.
+        // Llama.complete applies the GGUF chat template; do not append a fake assistant prefix.
+        val previous = chatHistory.dropLast(1).takeLast(4)
         return buildString {
             if (previous.isNotEmpty()) {
-                append("Riwayat percakapan:\n")
+                append("Konteks percakapan sebelumnya (ringkasan kutipan):\n")
                 previous.forEach { turn ->
                     append(if (turn.role == "user") "Pengguna: " else "Asisten: ")
-                    append(turn.text)
+                    append(turn.text.takeLast(700))
                     append("\n")
                 }
                 append("\n")
             }
             if (attachedFileText != null) {
-                append("File teks yang diberikan pengguna: ")
+                append("File teks pengguna: ")
                 append(attachedFileName ?: "dokumen.txt")
                 append("\n--- AWAL ISI FILE ---\n")
                 append(attachedFileText)
-                if (attachedFileWasTruncated) append("\n[Catatan: file terlalu panjang; hanya bagian awal yang disertakan.]")
+                if (attachedFileWasTruncated) append("\n[Catatan: file panjang; hanya 6.000 karakter pertama disertakan.]")
                 append("\n--- AKHIR ISI FILE ---\n\n")
             }
-            append("Pesan terbaru pengguna:\n")
+            append("Permintaan terbaru pengguna:\n")
             append(currentMessage)
-            append("\n\nJawaban asisten:")
+        }
+    }
+
+    private fun startGenerationIndicator() {
+        generationStartedAt = SystemClock.elapsedRealtime()
+        generationPhase = "Memuat model lokal…"
+        binding.progressChat.visibility = View.VISIBLE
+        generationTickerJob?.cancel()
+        generationTickerJob = lifecycleScope.launch {
+            while (isActive && isGenerating) {
+                val seconds = ((SystemClock.elapsedRealtime() - generationStartedAt) / 1000L)
+                    .coerceAtLeast(0L)
+                val timeLabel = String.format(
+                    Locale.getDefault(),
+                    "%02d:%02d",
+                    seconds / 60L,
+                    seconds % 60L
+                )
+                binding.tvChatStatus.text = "$generationPhase · $timeLabel"
+                delay(1000L)
+            }
         }
     }
 
@@ -771,10 +844,11 @@ class AssistantActivity : AppCompatActivity() {
         const val MAX_FILE_CHARS = 6_000
         const val CHAT_SYSTEM_PROMPT =
             "Kamu adalah asisten AI lokal yang membantu dalam bahasa pengguna, terutama bahasa Indonesia. " +
-            "Jawab jelas, relevan, dan jujur. Kamu berjalan di perangkat dan tidak memiliki akses internet atau " +
-            "kemampuan mengendalikan fungsi Android di luar perintah yang secara eksplisit didukung aplikasi. " +
-            "Jangan mengaku telah melakukan tindakan yang tidak benar-benar dijalankan. Bila pengguna memberi file teks, " +
-            "gunakan isi file tersebut sebagai konteks dan ikuti instruksinya."
+            "Jawab dengan natural, langsung ke inti, dan jujur. Untuk pesan santai atau pertanyaan sederhana, " +
+            "utamakan jawaban singkat 1–4 kalimat; uraikan lebih panjang hanya bila diminta atau diperlukan. " +
+            "Kamu berjalan di perangkat, tidak memiliki akses internet otomatis, dan hanya bisa menjalankan perintah " +
+            "aplikasi yang secara eksplisit didukung. Jangan mengaku telah melakukan tindakan yang tidak benar-benar dijalankan. " +
+            "Bila pengguna memberi file teks, gunakan isinya sebagai konteks dan ikuti instruksinya."
         const val FILE_EDIT_SYSTEM_PROMPT =
             "Kamu adalah asisten penyunting teks. Ikuti instruksi pengguna untuk memperbaiki, merapikan, meringkas, " +
             "memformat, menerjemahkan, atau merevisi file teks yang disertakan. Pertahankan maksud dan fakta sumber; " +
