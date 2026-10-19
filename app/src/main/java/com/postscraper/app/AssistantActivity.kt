@@ -323,6 +323,10 @@ class AssistantActivity : AppCompatActivity() {
     }
 
     private fun sendMessage() {
+        if (importInProgress) {
+            toast("Tunggu impor model selesai sebelum mengirim pesan.")
+            return
+        }
         if (isGenerating) {
             toast("Model masih menyiapkan jawaban.")
             return
@@ -588,6 +592,10 @@ class AssistantActivity : AppCompatActivity() {
     }
 
     private fun openTextPicker() {
+        if (importInProgress) {
+            toast("Tunggu impor model selesai sebelum membuka file teks.")
+            return
+        }
         if (isGenerating) {
             toast("Tunggu jawaban model selesai sebelum membuka file.")
             return
