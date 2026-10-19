@@ -24,15 +24,18 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.lifecycleScope
 import com.postscraper.app.databinding.ActivityAssistantBinding
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.BufferedReader
 import java.io.File
 import java.io.IOException
+import java.io.RandomAccessFile
 import java.io.InputStreamReader
 import java.nio.charset.StandardCharsets
 import java.text.SimpleDateFormat
@@ -47,7 +50,8 @@ class AssistantActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityAssistantBinding
     private val settingsStore by lazy(LazyThreadSafetyMode.NONE) { AppSettingsStore(applicationContext) }
-    private val assistantModel by lazy(LazyThreadSafetyMode.NONE) { LocalModelCleaner() }
+    private val assistantModelDelegate = lazy(LazyThreadSafetyMode.NONE) { LocalModelCleaner() }
+    private val assistantModel by assistantModelDelegate
 
     private data class Turn(val role: String, val text: String)
     private val chatHistory = mutableListOf<Turn>()
@@ -178,6 +182,19 @@ class AssistantActivity : AppCompatActivity() {
 
         loadSettingsIntoUi()
         if (intent.getStringExtra("start_screen") == "settings") showSettings() else showChat()
+    }
+
+    override fun onDestroy() {
+        generationTickerJob?.cancel()
+        generationTickerJob = null
+        // Release native model memory after any in-flight inference leaves its mutex.
+        if (assistantModelDelegate.isInitialized()) {
+            val modelCleaner = assistantModel
+            CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+                runCatching { modelCleaner.release() }
+            }
+        }
+        super.onDestroy()
     }
 
     override fun onBackPressed() {
@@ -362,6 +379,8 @@ class AssistantActivity : AppCompatActivity() {
                     pendingSaveName = makeEditedFileName(attachedFileName)
                     binding.btnSaveResult.visibility = View.VISIBLE
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 addAssistantReply(
                     "Gagal menjalankan model lokal: " + (e.message ?: e.javaClass.simpleName) +
@@ -372,10 +391,12 @@ class AssistantActivity : AppCompatActivity() {
                 generationTickerJob = null
                 binding.progressChat.visibility = View.GONE
                 isGenerating = false
-                binding.btnSendChat.isEnabled = true
-                binding.btnAttachText.isEnabled = true
-                binding.btnSendChat.text = "Kirim"
-                refreshModelStatus()
+                if (!isFinishing && !isDestroyed) {
+                    binding.btnSendChat.isEnabled = true
+                    binding.btnAttachText.isEnabled = true
+                    binding.btnSendChat.text = "Kirim"
+                    refreshModelStatus()
+                }
             }
         }
     }
@@ -595,6 +616,8 @@ class AssistantActivity : AppCompatActivity() {
                 pendingSaveText = null
                 showChat()
                 toast("File teks siap. Tulis instruksi untuk mengolah isinya.")
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 toast("Gagal membuka file: " + (e.message ?: "format tidak terbaca"))
             }
@@ -630,6 +653,8 @@ class AssistantActivity : AppCompatActivity() {
                     } ?: throw IOException("Lokasi penyimpanan tidak dapat dibuka.")
                 }
                 toast("Hasil teks berhasil disimpan.")
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 toast("Gagal menyimpan hasil: " + (e.message ?: e.javaClass.simpleName))
             }
@@ -740,6 +765,17 @@ class AssistantActivity : AppCompatActivity() {
                     if (copiedBytes < 100L * 1024L * 1024L || temporary.length() != copiedBytes) {
                         throw IOException("File terlalu kecil atau salinan model GGUF tidak lengkap.")
                     }
+                    if (totalBytes > 0L && copiedBytes != totalBytes) {
+                        throw IOException("Salinan model tidak lengkap: ukuran sumber dan hasil berbeda.")
+                    }
+                    RandomAccessFile(temporary, "r").use { modelFile ->
+                        val magic = ByteArray(4)
+                        if (modelFile.read(magic) != 4 ||
+                            !magic.contentEquals(byteArrayOf(0x47, 0x47, 0x55, 0x46))
+                        ) {
+                            throw IOException("Header file bukan GGUF yang valid. Pilih file model .gguf asli.")
+                        }
+                    }
 
                     val destination = File(modelDir, "assistant-model.gguf")
                     val backup = File(modelDir, "assistant-model.gguf.backup")
@@ -789,13 +825,17 @@ class AssistantActivity : AppCompatActivity() {
 
                 toast("Model berhasil diimpor dan siap digunakan.")
                 showChat()
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 toast("Impor model gagal: " + (e.message ?: e.javaClass.simpleName))
             } finally {
                 temporaryFile?.let { try { if (it.exists()) it.delete() } catch (_: Exception) { } }
                 importInProgress = false
-                loadSettingsIntoUi()
-                renderImportProgress(active = false)
+                if (!isFinishing && !isDestroyed) {
+                    loadSettingsIntoUi()
+                    renderImportProgress(active = false)
+                }
             }
         }
     }
