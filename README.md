@@ -85,3 +85,9 @@ The hamburger settings allow importing Qwen2.5-3B-Instruct-Abliterated.Q4_K_M.gg
 
 - Version name: 1.9
 - Version code: 10
+
+
+## CI APK signing and upgrades
+
+- GitHub Actions caches `~/.android/debug.keystore` on the default branch so future debug APK builds can retain the same signing identity. The cache is a development/debug key, not a production release key.
+- The previous v1.8 artifact was produced before this key was persisted; its signing certificate differs from the audited v1.9 build. Android may reject v1.9 as an in-place update. Back up the original GGUF file outside the app and be prepared to uninstall v1.8 once before installing the first stable-key v1.9 build. Uninstalling removes app-private settings/history and the imported copy of the model; the original GGUF file elsewhere on storage remains.
