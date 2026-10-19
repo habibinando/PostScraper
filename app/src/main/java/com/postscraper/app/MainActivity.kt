@@ -102,7 +102,9 @@ class MainActivity : AppCompatActivity() {
             // Confirm the potentially long and data-intensive operation before requests begin.
             binding.etMaxPosts.setText("1000")
             binding.etMinChars.setText("400")
-            binding.swUseHistory.isChecked = true
+            // Unique-vocabulary mode must reread already-visited articles too; repeated
+            // words are deduplicated during export, not by skipping source articles.
+            binding.swUseHistory.isChecked = !uniqueWordsOnly
             binding.swClean.isChecked = true
         }
 
